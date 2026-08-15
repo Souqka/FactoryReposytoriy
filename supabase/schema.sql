@@ -9,6 +9,10 @@
 -- Клиент использует только anon key. Пароли и service_role на клиент не попадают.
 -- Запись данных идёт через SECURITY DEFINER RPC с проверкой сессии.
 -- Позже app_login можно заменить на Supabase Auth без переписывания таблиц.
+--
+-- Hosted Supabase: pgcrypto обычно в схеме extensions. У всех SECURITY DEFINER
+-- функций search_path = public, extensions — иначе crypt()/digest() не находятся
+-- и вход с GitHub Pages даёт «Нет связи с базой».
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -224,7 +228,7 @@ CREATE OR REPLACE FUNCTION _require_session(p_token text, p_admin_only boolean D
 RETURNS app_sessions
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -259,7 +263,7 @@ RETURNS uuid
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
   SELECT p.id
   FROM items i
@@ -278,7 +282,7 @@ RETURNS void
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 BEGIN
   IF p_production_id IS NULL OR NOT EXISTS (
@@ -294,7 +298,7 @@ RETURNS uuid
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 BEGIN
   IF p_session.employee_id IS NULL THEN
@@ -314,7 +318,7 @@ RETURNS text
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   h  jsonb;
@@ -338,7 +342,7 @@ CREATE OR REPLACE FUNCTION _notify_live()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   rec jsonb;
@@ -382,7 +386,7 @@ CREATE OR REPLACE FUNCTION app_login(p_password text, p_client_key text DEFAULT 
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_user_hash    text;
@@ -459,7 +463,7 @@ CREATE OR REPLACE FUNCTION app_logout(p_token text)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 BEGIN
   DELETE FROM app_sessions WHERE token = p_token;
@@ -471,7 +475,7 @@ CREATE OR REPLACE FUNCTION app_session(p_token text)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -493,7 +497,7 @@ CREATE OR REPLACE FUNCTION app_set_employee(p_token text, p_employee_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -525,7 +529,7 @@ CREATE OR REPLACE FUNCTION update_item_quantity(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session     app_sessions;
@@ -601,7 +605,7 @@ CREATE OR REPLACE FUNCTION create_note(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -640,7 +644,7 @@ CREATE OR REPLACE FUNCTION update_note(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session     app_sessions;
@@ -684,7 +688,7 @@ CREATE OR REPLACE FUNCTION delete_note(p_token text, p_note_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -711,7 +715,7 @@ CREATE OR REPLACE FUNCTION upsert_daily_goal(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -744,7 +748,7 @@ CREATE OR REPLACE FUNCTION add_packed(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session     app_sessions;
@@ -789,7 +793,7 @@ CREATE OR REPLACE FUNCTION admin_save(p_token text, p_entity text, p_data jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -918,7 +922,7 @@ CREATE OR REPLACE FUNCTION admin_delete(p_token text, p_entity text, p_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -950,7 +954,7 @@ CREATE OR REPLACE FUNCTION admin_reorder(p_token text, p_entity text, p_ids uuid
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -985,7 +989,7 @@ CREATE OR REPLACE FUNCTION app_get_employees(p_token text, p_include_inactive bo
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1004,7 +1008,7 @@ CREATE OR REPLACE FUNCTION app_get_productions(p_token text, p_include_inactive 
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1027,7 +1031,7 @@ CREATE OR REPLACE FUNCTION app_get_tree(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1078,7 +1082,7 @@ CREATE OR REPLACE FUNCTION app_get_history(p_token text, p_production_id uuid, p
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1105,7 +1109,7 @@ CREATE OR REPLACE FUNCTION app_get_notes(p_token text, p_production_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1127,7 +1131,7 @@ CREATE OR REPLACE FUNCTION app_get_goal(p_token text, p_production_id uuid, p_da
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1149,7 +1153,7 @@ CREATE OR REPLACE FUNCTION app_get_packed_fact(p_token text, p_production_id uui
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
@@ -1171,7 +1175,7 @@ CREATE OR REPLACE FUNCTION app_get_packed_history(p_token text, p_production_id 
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
