@@ -43,7 +43,7 @@ app_sessions    токены прототипа (позже заменяются
 
 Пароли **не сравниваются в JavaScript** (`if (password === "1432")` нет). Они хранятся как bcrypt-хеш в `settings` и проверяются функцией `app_login`.
 
-Это **не** полноценная защита: anon key всё равно публичный, SELECT по операционным таблицам открыт для Realtime. Для внутренней команды на 1–3 человека этого достаточно как MVP. Следующий шаг — Supabase Auth + сужение RLS до `auth.uid()`.
+Это **прототип сессий**, не полноценная защита аккаунтов. Anon key публичный. Следующий шаг — Supabase Auth.
 
 Пользовательский вход:
 
@@ -52,7 +52,84 @@ app_sessions    токены прототипа (позже заменяются
 3. Выбор производства
 4. Работа с позициями / историей / записками / планом
 
-Админ: тот же RPC, роль должна быть `admin`.
+Админ: тот же RPC, роль `admin` проверяется **на сервере**.
+
+## Security model
+
+Current authentication is a prototype session-based system.
+Supabase Auth is planned as a future hardening step.
+
+Приложение **не** следует считать полностью безопасным для публичного интернета. Это внутренний MVP для 1–3 сотрудников.
+
+### Что защищает RLS
+
+На всех таблицах включён Row Level Security, **политик SELECT/INSERT/UPDATE/DELETE для `anon` нет**. Прямой REST-запрос вроде `GET /rest/v1/items` без сессии не возвращает производственные данные.
+
+Закрыты также:
+
+* `app_sessions`
+* `settings` (хеши паролей)
+* `login_attempts`
+* `change_history` (нет прямого INSERT/UPDATE/DELETE)
+
+### Что защищают RPC
+
+Все чтение и запись идут через `SECURITY DEFINER` функции. Они:
+
+* проверяют токен в `app_sessions` (`_require_session`);
+* для админских операций требуют `role = admin` **из строки сессии**, не из JavaScript;
+* для количества берут `employee_id` только из сессии;
+* проверяют цепочку `item → item_groups → departments → productions`;
+* пишут `change_history` в той же транзакции, что и `UPDATE items` (compare-and-swap по `quantity = old_value`).
+
+Вызов `admin_save` / `admin_delete` / `admin_reorder` с пользовательским токеном возвращает `forbidden`.
+
+### Как работает app_session
+
+1. `app_login(password, client_key)` сверяет bcrypt-хеш в `settings` и создаёт строку в `app_sessions`.
+2. Клиент хранит только `token` + `role` в localStorage.
+3. Каждый RPC принимает `p_token` и сам читает роль и сотрудника.
+4. Frontend **не** является источником истины для `employee_id` / `role`.
+
+### Anon key и service_role
+
+* Anon / publishable key **публичный** (лежит в `config/config.js`, это нормально для GitHub Pages).
+* `service_role` во frontend и в репозитории **не используется**.
+* Тот, у кого есть anon key, может вызывать разрешённые RPC (`app_login` и т.д.), но не может читать таблицы напрямую.
+
+### Brute-force
+
+`login_attempts` считает неудачные входы за 15 минут:
+
+* 5 ошибок с одного `client_key` (ключ в localStorage, переживает refresh);
+* 20 ошибок с одного IP (хеш из `X-Forwarded-For`, если его передаёт Supabase).
+
+После лимита даже верный пароль не принимается 15 минут; на ошибку добавляется `pg_sleep`.
+
+Ограничение: атакующий может менять `client_key` и IP (VPN). Это задержка, не полноценный WAF. Bcrypt тоже замедляет перебор.
+
+### Realtime без публичного SELECT
+
+`postgres_changes` требует SELECT-политику, поэтому **таблицы не публикуются** в `supabase_realtime`.
+
+Вместо этого триггер шлёт `realtime.send(..., private => false)` в канал `factory-live`. Клиенты с валидной сессией подписаны на broadcast и либо применяют `{id, quantity, version}`, либо перечитывают данные через RPC.
+
+Ограничение: канал broadcast **публичный** (без JWT нельзя сделать private). Знающий anon key и имя канала может видеть компактные live-события. Полный каталог, историю и записки через REST он не выгрузит.
+
+### Известные ограничения прототипа
+
+* Пароли `1980` / `1432` — короткие общие секреты, не персональные аккаунты.
+* Сессия — непрозрачный токен в `app_sessions`, не JWT Supabase Auth.
+* Утечка токена = действия от имени этой сессии до истечения (12 часов).
+* Live-broadcast не аутентифицирован (см. выше).
+* Rate limit можно обойти сменой device id + IP.
+* Локальный режим (без Supabase) проверяет пароль в браузере — только для разработки.
+
+Проверки: `supabase/security_test.sql`.
+
+### Уже развёрнутая база
+
+Повторно выполнить `schema.sql`, затем `policies.sql`. `seed.sql` не запускать повторно на живых данных.
 
 ## Изменение количества и гонки
 
@@ -76,7 +153,7 @@ admin.html          визуальный конфигуратор
 css/                стиль, админка, адаптив
 js/                 модули без сборщика
 config/             ключи Supabase (только anon)
-supabase/           schema.sql, policies.sql, seed.sql
+supabase/           schema.sql, policies.sql, seed.sql, security_test.sql
 ```
 
 ## Установка
@@ -92,6 +169,10 @@ supabase/           schema.sql, policies.sql, seed.sql
 1. `supabase/schema.sql`
 2. `supabase/policies.sql`
 3. `supabase/seed.sql`
+
+По желанию: `supabase/security_test.sql` — в логе должно быть `SECURITY TESTS PASSED`.
+
+Если база уже была создана по предыдущей версии, повторно выполните **только** `schema.sql` и `policies.sql` (seed не запускать).
 
 ### 3. Ключи
 

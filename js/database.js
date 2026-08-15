@@ -23,8 +23,8 @@
       if (!impl) this.init();
       return impl;
     },
-    login(password) {
-      return this.adapter().login(password);
+    login(password, clientKey) {
+      return this.adapter().login(password, clientKey);
     },
     logout(token) {
       return this.adapter().logout(token);
