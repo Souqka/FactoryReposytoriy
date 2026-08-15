@@ -593,6 +593,52 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION update_item_min_limit(
+  p_token text,
+  p_item_id uuid,
+  p_min integer
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+DECLARE
+  v_session     app_sessions;
+  v_item        items;
+  v_production  uuid;
+BEGIN
+  v_session := _require_session(p_token, false);
+  PERFORM _require_employee(v_session);
+
+  IF p_min IS NULL OR p_min < 0 THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'invalid_min');
+  END IF;
+
+  v_production := _production_id_for_item(p_item_id);
+  IF v_production IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'item_not_found');
+  END IF;
+
+  UPDATE items
+     SET min_limit = p_min,
+         version = version + 1
+   WHERE id = p_item_id
+     AND active = true
+  RETURNING * INTO v_item;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'item_not_found');
+  END IF;
+
+  RETURN jsonb_build_object(
+    'ok', true,
+    'min_limit', v_item.min_limit,
+    'version', v_item.version
+  );
+END;
+$$;
+
 -- -----------------------------------------------------------------------------
 -- Записки: author_id только из сессии
 -- -----------------------------------------------------------------------------
@@ -708,7 +754,7 @@ $$;
 CREATE OR REPLACE FUNCTION upsert_daily_goal(
   p_token         text,
   p_production_id uuid,
-  p_goal_date     date,
+  p_goal_date     date DEFAULT NULL,
   p_target        integer,
   p_label         text DEFAULT 'упакованных рамок'
 )
@@ -731,7 +777,7 @@ BEGIN
   END IF;
 
   INSERT INTO daily_goals (production_id, goal_date, target, label)
-  VALUES (p_production_id, v_date, GREATEST(COALESCE(p_target, 0), 0), COALESCE(NULLIF(p_label, ''), 'упакованных рамок'))
+  VALUES (p_production_id, v_date, GREATEST(COALESCE(p_target, 0), 0), COALESCE(p_label, ''))
   ON CONFLICT (production_id, goal_date)
   DO UPDATE SET target = EXCLUDED.target, label = EXCLUDED.label
   RETURNING * INTO v_goal;
@@ -1127,7 +1173,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION app_get_goal(p_token text, p_production_id uuid, p_date date)
+CREATE OR REPLACE FUNCTION app_get_goal(p_token text, p_production_id uuid, p_date date DEFAULT NULL)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -1189,7 +1235,8 @@ BEGIN
     FROM (
       SELECT d.dt::date AS date,
              COALESCE(p.fact, 0) AS fact,
-             COALESCE(g.target, 0) AS target
+             COALESCE(g.target, 0) AS target,
+             COALESCE(g.label, '') AS label
       FROM (
         SELECT packed_date AS dt FROM packed_history WHERE production_id = p_production_id
         UNION

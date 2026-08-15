@@ -202,6 +202,17 @@ BEGIN
     RAISE EXCEPTION 'FAIL: missing_item %', v_res;
   END IF;
 
+  -- минимум позиции: пользователь может менять порог, не количество
+  UPDATE items SET min_limit = 0 WHERE id = v_item_id;
+  v_res := update_item_min_limit(v_user_token, v_item_id, 7);
+  IF v_res->>'ok' <> 'true' OR (v_res->>'min_limit')::integer <> 7 THEN
+    RAISE EXCEPTION 'FAIL: update_item_min_limit %', v_res;
+  END IF;
+  v_res := update_item_min_limit(v_user_token, v_item_id, -1);
+  IF v_res->>'error' <> 'invalid_min' THEN
+    RAISE EXCEPTION 'FAIL: min_negative %', v_res;
+  END IF;
+
   -- notes
   v_res := create_note(v_user_token, v_prod_id, 'security test note', NULL);
   IF v_res->>'ok' <> 'true' THEN

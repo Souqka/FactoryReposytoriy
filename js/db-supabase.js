@@ -121,6 +121,14 @@
       });
     },
 
+    async updateItemMinLimit(tok, itemId, minLimit) {
+      return rpc("update_item_min_limit", {
+        p_token: tok,
+        p_item_id: itemId,
+        p_min: minLimit,
+      });
+    },
+
     async getHistory(productionId, limit) {
       const res = await rpc("app_get_history", {
         p_token: token(),
@@ -163,7 +171,7 @@
       const res = await rpc("app_get_goal", {
         p_token: token(),
         p_production_id: productionId,
-        p_date: date,
+        p_date: date || null,
       });
       unwrapOk(res);
       return res.goal || null;
@@ -173,9 +181,9 @@
       return rpc("upsert_daily_goal", {
         p_token: tok,
         p_production_id: productionId,
-        p_goal_date: date,
+        p_goal_date: date || null,
         p_target: target,
-        p_label: label || "упакованных рамок",
+        p_label: label || "",
       });
     },
 

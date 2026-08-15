@@ -76,8 +76,15 @@
     }
     unsub = DB.subscribe(async (evt) => {
       if (!State.data.productionId) return;
-      if (evt.table === "items" && evt.payload && evt.payload.new) {
-        Production.applyRealtimeItem(evt.payload.new);
+      if (evt.table === "items") {
+        const row = evt.payload && evt.payload.new;
+        const op = evt.payload && evt.payload.eventType;
+        const applied = op !== "DELETE" && Production.applyRealtimeItem(row);
+        if (!applied) {
+          await Production.load(State.data.productionId);
+          if (State.data.panel === "items") Production.renderItems(UI.$("#panel-items"));
+        }
+        if (State.data.panel === "goals") Goals.syncFromItems(UI.$("#panel-goals"));
         return;
       }
       if (evt.table === "change_history") {
@@ -91,11 +98,17 @@
         return;
       }
       if (evt.table === "daily_goals" || evt.table === "packed_history") {
+        if (typeof Goals !== "undefined" && Goals.saving) return;
         await Goals.load(State.data.productionId);
         if (State.data.panel === "goals") Goals.render(UI.$("#panel-goals"));
         return;
       }
-      if (["productions", "departments", "item_groups", "employees"].includes(evt.table) || evt.type === "storage" || evt.type === "local") {
+      if (evt.type === "local") {
+        if (State.data.panel === "goals") return;
+        await refreshWorkspace();
+        return;
+      }
+      if (["productions", "departments", "item_groups", "employees"].includes(evt.table) || evt.type === "storage") {
         await refreshWorkspace();
       }
     });
@@ -214,6 +227,7 @@
 
   async function boot() {
     UI.applyTheme();
+    UI.applyQtySteppers();
     UI.bindThemeToggles();
     const mode = DB.init();
     Offline.init();

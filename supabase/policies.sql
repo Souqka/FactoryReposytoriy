@@ -110,6 +110,14 @@ GRANT EXECUTE ON FUNCTION app_get_goal(text, uuid, date) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION app_get_packed_fact(text, uuid, date) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION app_get_packed_history(text, uuid) TO anon, authenticated;
 
+DO $$
+BEGIN
+  REVOKE ALL ON FUNCTION update_item_min_limit(text, uuid, integer) FROM PUBLIC;
+  GRANT EXECUTE ON FUNCTION update_item_min_limit(text, uuid, integer) TO anon, authenticated;
+EXCEPTION
+  WHEN undefined_function THEN NULL;
+END $$;
+
 -- -----------------------------------------------------------------------------
 -- Убрать таблицы из postgres_changes publication:
 -- без SELECT-политики события всё равно не доходили бы до anon,

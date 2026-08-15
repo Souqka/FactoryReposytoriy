@@ -270,6 +270,22 @@
       return { ok: true, quantity: item.quantity, version: item.version };
     },
 
+    async updateItemMinLimit(token, itemId, minLimit) {
+      const session = requireSession(token, false);
+      if (!session.employee_id) return { ok: false, error: "employee_required" };
+      const min = UI.parseNonNegInt(minLimit, NaN);
+      if (!Number.isFinite(min)) return { ok: false, error: "invalid_min" };
+      const productionId = productionIdForItem(itemId);
+      if (!productionId) return { ok: false, error: "item_not_found" };
+      const item = db.items.find((i) => i.id === itemId);
+      if (!item || !item.active) return { ok: false, error: "item_not_found" };
+      item.min_limit = min;
+      item.version = (item.version || 1) + 1;
+      item.updated_at = new Date().toISOString();
+      save();
+      return { ok: true, min_limit: item.min_limit, version: item.version };
+    },
+
     async getHistory(productionId, limit) {
       return db.change_history
         .filter((h) => h.production_id === productionId)
@@ -319,18 +335,21 @@
     },
 
     async getGoal(productionId, date) {
-      return db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === date) || null;
+      const d = date || UI.todayISO();
+      return db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === d) || null;
     },
 
     async upsertGoal(token, productionId, date, target, label) {
       requireSession(token, false);
-      let goal = db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === date);
+      const d = date || UI.todayISO();
+      const nextLabel = label == null ? "" : String(label);
+      let goal = db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === d);
       if (!goal) {
-        goal = { id: UI.uid(), production_id: productionId, goal_date: date, target, label: label || "упакованных рамок" };
+        goal = { id: UI.uid(), production_id: productionId, goal_date: d, target, label: nextLabel };
         db.daily_goals.push(goal);
       } else {
         goal.target = target;
-        if (label) goal.label = label;
+        goal.label = nextLabel;
       }
       save();
       return { ok: true, goal };
@@ -374,7 +393,7 @@
       return Array.from(map.entries())
         .map(([date, fact]) => {
           const goal = db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === date);
-          return { date, fact, target: goal ? goal.target : 0 };
+          return { date, fact, target: goal ? goal.target : 0, label: goal ? goal.label : "" };
         })
         .sort((a, b) => (a.date < b.date ? 1 : -1));
     },
