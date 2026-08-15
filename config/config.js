@@ -4,6 +4,6 @@
  * service_role сюда не класть.
  */
 window.APP_CONFIG = {
-  supabaseUrl: "",
-  supabaseAnonKey: "",
+  supabaseUrl: "https://eckkxeumjuorbmmllzny.supabase.co",
+  supabaseAnonKey: "sb_publishable_uIyvIt3cNezl5Fm_R1lVTw_mSin9E_r",
 };
