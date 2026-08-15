@@ -8,9 +8,24 @@
  * Клиентская проверка пароля НЕ является защитой.
  */
 (function (global) {
+  const DEVICE_KEY = "factory.device.v1";
+
+  function deviceKey() {
+    try {
+      let key = localStorage.getItem(DEVICE_KEY);
+      if (!key) {
+        key = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random();
+        localStorage.setItem(DEVICE_KEY, key);
+      }
+      return key;
+    } catch {
+      return "anonymous";
+    }
+  }
+
   const Auth = {
     async login(password) {
-      const res = await DB.login(password);
+      const res = await DB.login(password, deviceKey());
       if (!res || !res.ok) return { ok: false, error: (res && res.error) || "invalid_password" };
       State.setSession({
         token: res.token,

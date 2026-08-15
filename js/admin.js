@@ -507,7 +507,10 @@
       try {
         const res = await Auth.login(UI.$("#adminPassword").value);
         if (!res.ok || res.role !== "admin") {
-          UI.$("#adminLoginError").textContent = "Нужен пароль администратора";
+          UI.$("#adminLoginError").textContent =
+            res.error === "too_many_attempts"
+              ? "Слишком много попыток. Подождите 15 минут."
+              : "Нужен пароль администратора";
           if (res.ok) await Auth.logout();
           return;
         }
