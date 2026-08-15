@@ -1,0 +1,62 @@
+/* Адаптив: телефон — планшет — ПК */
+
+@media (max-width: 480px) {
+  .card {
+    padding: 22px 16px;
+  }
+
+  .qty-btn {
+    width: 52px;
+    height: 52px;
+  }
+
+  .qty-value {
+    min-width: 76px;
+    font-size: 28px;
+  }
+
+  .goal-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 720px) {
+  .workspace {
+    padding-top: 16px;
+  }
+
+  .dock {
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(860px, 100%);
+    border-radius: 14px 14px 0 0;
+  }
+}
+
+@media (min-width: 960px) {
+  .admin-layout {
+    grid-template-columns: 260px 1fr;
+  }
+}
+
+/* Крупные зоны нажатия, без hover-only */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover,
+  .icon-btn:hover,
+  .person-btn:hover,
+  .prod-btn:hover,
+  .qty-btn:hover {
+    filter: brightness(1.08);
+  }
+}
+
+/* Предотвращаем double-tap zoom на кнопках, скролл страницы не ломаем */
+.qty-btn,
+.dock button,
+.icon-btn,
+.btn,
+.person-btn,
+.prod-btn,
+.reorder-btn {
+  touch-action: manipulation;
+}
