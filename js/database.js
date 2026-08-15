@@ -56,6 +56,9 @@
     updateItemQuantity(token, itemId, oldQty, newQty) {
       return this.adapter().updateItemQuantity(token, itemId, oldQty, newQty);
     },
+    updateItemMinLimit(token, itemId, minLimit) {
+      return this.adapter().updateItemMinLimit(token, itemId, minLimit);
+    },
     getHistory(id, limit) {
       return this.adapter().getHistory(id, limit);
     },

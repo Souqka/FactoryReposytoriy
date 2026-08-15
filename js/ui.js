@@ -71,6 +71,16 @@
       .replace(/"/g, "&quot;");
   }
 
+  function parseNonNegInt(raw, fallback) {
+    const n = Number.parseInt(String(raw ?? "").trim(), 10);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return Math.floor(n);
+  }
+
+  function applyQtySteppers() {
+    document.body.classList.toggle("qty-steppers-off", !UI.qtySteppersEnabled);
+  }
+
   function uid() {
     if (crypto.randomUUID) return crypto.randomUUID();
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -91,6 +101,9 @@
     formatDateTime,
     todayISO,
     escapeHtml,
+    parseNonNegInt,
+    applyQtySteppers,
+    qtySteppersEnabled: false,
     uid,
   };
 
