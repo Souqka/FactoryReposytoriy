@@ -755,7 +755,7 @@ CREATE OR REPLACE FUNCTION upsert_daily_goal(
   p_token         text,
   p_production_id uuid,
   p_goal_date     date DEFAULT NULL,
-  p_target        integer,
+  p_target        integer DEFAULT 0,
   p_label         text DEFAULT 'упакованных рамок'
 )
 RETURNS jsonb
@@ -1195,7 +1195,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION app_get_packed_fact(p_token text, p_production_id uuid, p_date date)
+CREATE OR REPLACE FUNCTION app_get_packed_fact(p_token text, p_production_id uuid, p_date date DEFAULT NULL)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
