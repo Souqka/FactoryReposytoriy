@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101418" />
+  <title>Админ — Производство</title>
+  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/style.css" />
+  <link rel="stylesheet" href="./css/admin.css" />
+  <link rel="stylesheet" href="./css/responsive.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <div class="banner banner-offline" id="offlineBanner">Нет сети</div>
+    <div class="banner banner-local" id="localBanner">Локальный режим: изменения только в этом браузере</div>
+
+    <section class="screen is-active" id="screen-login" data-screen="login">
+      <div class="center-wrap">
+        <div class="card">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <div>
+              <h1>Админ-панель</h1>
+              <p>Конфигурация производств без кода</p>
+            </div>
+          </div>
+          <form id="adminLoginForm">
+            <label class="field">
+              <span>Пароль администратора</span>
+              <input type="password" id="adminPassword" inputmode="numeric" autocomplete="current-password" required />
+            </label>
+            <p class="form-error" id="adminLoginError"></p>
+            <button class="btn btn-primary btn-block" type="submit">Войти</button>
+          </form>
+          <p class="setup-hint">Проверка пароля выполняется на стороне базы (RPC), не сравнением строки в JavaScript.</p>
+          <p><a href="./index.html" style="color: var(--accent)">← К рабочему экрану</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-admin" data-screen="admin">
+      <header class="topbar">
+        <div class="title">Конфигуратор</div>
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Тема">◐</button>
+        <a class="icon-btn" href="./index.html" title="На сайт" style="text-decoration:none">⌂</a>
+        <button class="icon-btn" type="button" id="adminLogout" aria-label="Выйти">⎋</button>
+      </header>
+      <div class="admin-layout">
+        <nav class="admin-nav" id="adminNav">
+          <button type="button" class="is-active" data-admin-tab="productions">Производства</button>
+          <button type="button" data-admin-tab="employees">Сотрудники</button>
+          <button type="button" data-admin-tab="about">Справка</button>
+        </nav>
+        <main class="admin-main" id="adminMain"></main>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast-host" id="toasts"></div>
+
+  <script src="./config/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./js/state.js"></script>
+  <script src="./js/ui.js"></script>
+  <script src="./js/supabase.js"></script>
+  <script src="./js/db-local.js"></script>
+  <script src="./js/db-supabase.js"></script>
+  <script src="./js/database.js"></script>
+  <script src="./js/offline.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="./js/admin.js"></script>
+</body>
+</html>

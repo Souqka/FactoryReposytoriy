@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101418" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Производство</title>
+  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/style.css" />
+  <link rel="stylesheet" href="./css/admin.css" />
+  <link rel="stylesheet" href="./css/responsive.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <div class="banner banner-offline" id="offlineBanner">Нет сети — показаны последние данные. Изменения встанут в очередь.</div>
+    <div class="banner banner-local" id="localBanner">Локальный режим: Supabase не настроен. Данные только в этом браузере.</div>
+
+    <!-- Вход -->
+    <section class="screen is-active" id="screen-login" data-screen="login">
+      <div class="center-wrap">
+        <div class="card">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <div>
+              <h1>Производство</h1>
+              <p>Внутренняя система учёта</p>
+            </div>
+          </div>
+          <form id="loginForm">
+            <label class="field">
+              <span>Пароль</span>
+              <input type="password" id="loginPassword" inputmode="numeric" autocomplete="current-password" required />
+            </label>
+            <p class="form-error" id="loginError"></p>
+            <button class="btn btn-primary btn-block" type="submit">Войти</button>
+          </form>
+          <p class="setup-hint hidden" id="setupHint">
+            Заполните <code>config/config.js</code> ключами Supabase.
+            Пока ключей нет, приложение работает в локальном режиме.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Сотрудник -->
+    <section class="screen" id="screen-employee" data-screen="employee">
+      <header class="topbar">
+        <button class="icon-btn" type="button" id="backFromEmployee" aria-label="Назад">←</button>
+        <div class="title">Кто работает</div>
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Тема">◐</button>
+      </header>
+      <div class="page">
+        <p class="lede">Выберите сотрудника. Цвет будет виден в истории изменений.</p>
+        <div class="list" id="employeeList"></div>
+      </div>
+    </section>
+
+    <!-- Производство -->
+    <section class="screen" id="screen-production-select" data-screen="production-select">
+      <header class="topbar">
+        <button class="icon-btn" type="button" id="backFromProdSelect" aria-label="Назад">←</button>
+        <div class="title">
+          Производство
+          <span class="sub" id="selectedEmployeeLabel"></span>
+        </div>
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Тема">◐</button>
+      </header>
+      <div class="page">
+        <p class="lede">Выберите площадку.</p>
+        <div class="list" id="productionList"></div>
+      </div>
+    </section>
+
+    <!-- Рабочий экран -->
+    <section class="screen" id="screen-workspace" data-screen="workspace">
+      <header class="topbar">
+        <span class="status-led" id="connLed" title="Связь"></span>
+        <div class="title">
+          <span id="wsProductionName">Производство</span>
+          <span class="sub employee-chip" id="wsEmployee">
+            <span class="dot" id="wsEmployeeDot"></span>
+            <span id="wsEmployeeName"></span>
+          </span>
+        </div>
+        <div class="menu">
+          <button class="icon-btn" type="button" id="wsMenuBtn" aria-label="Меню">☰</button>
+          <div class="menu-pop" id="wsMenu">
+            <button type="button" id="menuChangeProd">Сменить производство</button>
+            <button type="button" id="menuChangeEmp">Сменить сотрудника</button>
+            <button type="button" data-theme-toggle>Тема</button>
+            <button type="button" id="menuAdmin">Админ-панель</button>
+            <button type="button" id="menuLogout">Выйти</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <div class="panel is-active" id="panel-items"></div>
+        <div class="panel" id="panel-history"></div>
+        <div class="panel" id="panel-notes"></div>
+        <div class="panel" id="panel-goals"></div>
+      </div>
+
+      <nav class="dock" aria-label="Разделы">
+        <button type="button" class="is-active" data-panel="items"><span class="ico">▣</span>Склад</button>
+        <button type="button" data-panel="history"><span class="ico">⟳</span>История</button>
+        <button type="button" data-panel="notes"><span class="ico">✎</span>Записки</button>
+        <button type="button" data-panel="goals"><span class="ico">◎</span>План</button>
+      </nav>
+    </section>
+  </div>
+
+  <div class="toast-host" id="toasts"></div>
+
+  <script src="./config/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./js/state.js"></script>
+  <script src="./js/ui.js"></script>
+  <script src="./js/supabase.js"></script>
+  <script src="./js/db-local.js"></script>
+  <script src="./js/db-supabase.js"></script>
+  <script src="./js/database.js"></script>
+  <script src="./js/offline.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="./js/employees.js"></script>
+  <script src="./js/history.js"></script>
+  <script src="./js/notes.js"></script>
+  <script src="./js/goals.js"></script>
+  <script src="./js/production.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>
