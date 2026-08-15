@@ -78,6 +78,7 @@
       ],
       packed_history: [],
       sessions: [],
+      login_attempts: [],
     };
   }
 
@@ -122,12 +123,14 @@
   }
 
   function productionIdForItem(itemId) {
-    const item = db.items.find((i) => i.id === itemId);
+    const item = db.items.find((i) => i.id === itemId && i.active);
     if (!item) return null;
-    const group = db.item_groups.find((g) => g.id === item.group_id);
+    const group = db.item_groups.find((g) => g.id === item.group_id && g.active);
     if (!group) return null;
-    const dept = db.departments.find((d) => d.id === group.department_id);
-    return dept ? dept.production_id : null;
+    const dept = db.departments.find((d) => d.id === group.department_id && d.active);
+    if (!dept) return null;
+    const prod = db.productions.find((p) => p.id === dept.production_id && p.active);
+    return prod ? prod.id : null;
   }
 
   function sortByOrder(list) {
@@ -137,12 +140,28 @@
   const LocalDB = {
     mode: "local",
 
-    async login(password) {
+    async login(password, clientKey) {
+      const key = String(clientKey || "anonymous").slice(0, 80);
+      db.login_attempts = db.login_attempts || [];
+      const since = Date.now() - 15 * 60 * 1000;
+      const fails = db.login_attempts.filter(
+        (a) => a.client_key === key && !a.success && new Date(a.created_at).getTime() > since
+      );
+      if (fails.length >= 5) {
+        db.login_attempts.push({ client_key: key, success: false, created_at: new Date().toISOString() });
+        save();
+        return { ok: false, error: "too_many_attempts" };
+      }
       const hash = await sha256hex(password);
       let role = null;
       if (hash === ADMIN_HASH) role = "admin";
       else if (hash === USER_HASH) role = "user";
-      if (!role) return { ok: false, error: "invalid_password" };
+      if (!role) {
+        db.login_attempts.push({ client_key: key, success: false, created_at: new Date().toISOString() });
+        save();
+        return { ok: false, error: "invalid_password" };
+      }
+      db.login_attempts.push({ client_key: key, success: true, created_at: new Date().toISOString() });
       const session = {
         id: UI.uid(),
         token: UI.uid().replace(/-/g, "") + UI.uid().replace(/-/g, ""),
@@ -221,8 +240,13 @@
     },
 
     async updateItemQuantity(token, itemId, oldQty, newQty) {
-      requireSession(token, false);
+      const session = requireSession(token, false);
+      if (!session.employee_id) return { ok: false, error: "employee_required" };
+      const emp = db.employees.find((e) => e.id === session.employee_id && e.active);
+      if (!emp) return { ok: false, error: "employee_inactive" };
       if (newQty < 0 || !Number.isFinite(newQty)) return { ok: false, error: "invalid_quantity" };
+      const productionId = productionIdForItem(itemId);
+      if (!productionId) return { ok: false, error: "item_not_found" };
       const item = db.items.find((i) => i.id === itemId);
       if (!item || !item.active) return { ok: false, error: "item_not_found" };
       if (item.quantity !== oldQty) {
@@ -231,12 +255,11 @@
       item.quantity = newQty;
       item.version = (item.version || 1) + 1;
       item.updated_at = new Date().toISOString();
-      const session = sessionByToken(token);
       db.change_history.unshift({
         id: UI.uid(),
-        production_id: productionIdForItem(itemId),
+        production_id: productionId,
         item_id: itemId,
-        employee_id: session && session.employee_id,
+        employee_id: session.employee_id,
         item_name: item.name,
         old_value: oldQty,
         new_value: newQty,
@@ -315,6 +338,9 @@
 
     async addPacked(token, productionId, quantity) {
       const s = requireSession(token, false);
+      if (!s.employee_id) return { ok: false, error: "employee_required" };
+      const prod = db.productions.find((p) => p.id === productionId && p.active);
+      if (!prod) return { ok: false, error: "production_not_found" };
       const date = UI.todayISO();
       const factNow = db.packed_history
         .filter((p) => p.production_id === productionId && p.packed_date === date)

@@ -138,7 +138,10 @@
       try {
         const res = await Auth.login(password);
         if (!res.ok) {
-          UI.$("#loginError").textContent = "Неверный пароль";
+          UI.$("#loginError").textContent =
+            res.error === "too_many_attempts"
+              ? "Слишком много попыток. Подождите 15 минут."
+              : "Неверный пароль";
           return;
         }
         await afterLogin();

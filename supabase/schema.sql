@@ -157,6 +157,21 @@ CREATE TABLE IF NOT EXISTS app_sessions (
 );
 
 -- -----------------------------------------------------------------------------
+-- Попытки входа (brute-force). Прямой доступ клиента запрещён политиками.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_key  text NOT NULL,
+  ip_hash     text,
+  success     boolean NOT NULL DEFAULT false,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_client ON login_attempts (client_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts (ip_hash, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_created ON login_attempts (created_at);
+
+-- -----------------------------------------------------------------------------
 -- Индексы
 -- -----------------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_departments_production ON departments (production_id, sort_order);
@@ -203,7 +218,7 @@ CREATE TRIGGER trg_goals_updated
   FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
 
 -- -----------------------------------------------------------------------------
--- Вспомогательные RPC
+-- Вспомогательные RPC (не выдаются anon)
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION _require_session(p_token text, p_admin_only boolean DEFAULT false)
 RETURNS app_sessions
@@ -246,29 +261,168 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT d.production_id
+  SELECT p.id
   FROM items i
   JOIN item_groups g ON g.id = i.group_id
   JOIN departments d ON d.id = g.department_id
+  JOIN productions p ON p.id = d.production_id
   WHERE i.id = p_item_id
+    AND i.active = true
+    AND g.active = true
+    AND d.active = true
+    AND p.active = true
+$$;
+
+CREATE OR REPLACE FUNCTION _assert_production(p_production_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_production_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM productions WHERE id = p_production_id AND active = true
+  ) THEN
+    RAISE EXCEPTION 'production_not_found' USING ERRCODE = '22023';
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION _require_employee(p_session app_sessions)
+RETURNS uuid
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_session.employee_id IS NULL THEN
+    RAISE EXCEPTION 'employee_required' USING ERRCODE = '22023';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM employees WHERE id = p_session.employee_id AND active = true
+  ) THEN
+    RAISE EXCEPTION 'employee_inactive' USING ERRCODE = '22023';
+  END IF;
+  RETURN p_session.employee_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION _request_ip_hash()
+RETURNS text
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  h  jsonb;
+  ip text;
+BEGIN
+  BEGIN
+    h := current_setting('request.headers', true)::jsonb;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN '';
+  END;
+  ip := COALESCE(h->>'x-forwarded-for', h->>'x-real-ip', '');
+  ip := trim(split_part(ip, ',', 1));
+  IF ip = '' THEN
+    RETURN '';
+  END IF;
+  RETURN encode(digest(ip, 'sha256'), 'hex');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION _notify_live()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  rec jsonb;
+  payload jsonb;
+BEGIN
+  rec := CASE WHEN TG_OP = 'DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+  payload := jsonb_build_object(
+    'table', TG_TABLE_NAME,
+    'op', TG_OP,
+    'record', CASE
+      WHEN TG_TABLE_NAME = 'items' THEN jsonb_build_object(
+        'id', rec->>'id',
+        'quantity', rec->'quantity',
+        'version', rec->'version',
+        'name', rec->>'name',
+        'min_limit', rec->'min_limit',
+        'group_id', rec->>'group_id',
+        'active', rec->'active',
+        'sort_order', rec->'sort_order'
+      )
+      ELSE jsonb_build_object('id', rec->>'id')
+    END
+  );
+  BEGIN
+    PERFORM realtime.send(payload, 'change', 'factory-live', false);
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
+  RETURN COALESCE(NEW, OLD);
+END;
 $$;
 
 -- -----------------------------------------------------------------------------
 -- Вход: пароль проверяется на сервере (хеш в settings).
 -- Клиент НЕ сравнивает строки 1980 / 1432.
+-- Не возвращает hash, settings и строки app_sessions.
 -- -----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION app_login(p_password text)
+DROP FUNCTION IF EXISTS app_login(text);
+
+CREATE OR REPLACE FUNCTION app_login(p_password text, p_client_key text DEFAULT '')
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_user_hash  text;
-  v_admin_hash text;
-  v_role       text;
-  v_session    app_sessions;
+  v_user_hash    text;
+  v_admin_hash   text;
+  v_role         text;
+  v_session      app_sessions;
+  v_client       text;
+  v_ip_hash      text;
+  v_fails_client integer;
+  v_fails_ip     integer;
+  v_skip_delay   boolean;
 BEGIN
+  v_client := left(COALESCE(NULLIF(trim(p_client_key), ''), 'anonymous'), 80);
+  v_ip_hash := _request_ip_hash();
+  v_skip_delay := current_setting('app.skip_login_delay', true) = 'on';
+
+  DELETE FROM login_attempts WHERE created_at < now() - interval '7 days';
+
+  SELECT count(*) INTO v_fails_client
+  FROM login_attempts
+  WHERE client_key = v_client
+    AND success = false
+    AND created_at > now() - interval '15 minutes';
+
+  SELECT count(*) INTO v_fails_ip
+  FROM login_attempts
+  WHERE ip_hash = v_ip_hash
+    AND v_ip_hash <> ''
+    AND success = false
+    AND created_at > now() - interval '15 minutes';
+
+  IF v_fails_client >= 5 OR v_fails_ip >= 20 THEN
+    INSERT INTO login_attempts (client_key, ip_hash, success)
+    VALUES (v_client, NULLIF(v_ip_hash, ''), false);
+    IF NOT v_skip_delay THEN
+      PERFORM pg_sleep(2);
+    END IF;
+    RETURN jsonb_build_object('ok', false, 'error', 'too_many_attempts');
+  END IF;
+
   SELECT value->>'hash' INTO v_admin_hash FROM settings WHERE key = 'admin_password';
   SELECT value->>'hash' INTO v_user_hash  FROM settings WHERE key = 'user_password';
 
@@ -277,8 +431,16 @@ BEGIN
   ELSIF v_user_hash IS NOT NULL AND crypt(p_password, v_user_hash) = v_user_hash THEN
     v_role := 'user';
   ELSE
+    INSERT INTO login_attempts (client_key, ip_hash, success)
+    VALUES (v_client, NULLIF(v_ip_hash, ''), false);
+    IF NOT v_skip_delay THEN
+      PERFORM pg_sleep(LEAST(0.35 * (v_fails_client + 1), 2.0));
+    END IF;
     RETURN jsonb_build_object('ok', false, 'error', 'invalid_password');
   END IF;
+
+  INSERT INTO login_attempts (client_key, ip_hash, success)
+  VALUES (v_client, NULLIF(v_ip_hash, ''), true);
 
   INSERT INTO app_sessions (role)
   VALUES (v_role)
@@ -323,7 +485,7 @@ BEGIN
   );
 EXCEPTION
   WHEN OTHERS THEN
-    RETURN jsonb_build_object('ok', false, 'error', SQLERRM);
+    RETURN jsonb_build_object('ok', false, 'error', 'invalid_session');
 END;
 $$;
 
@@ -351,8 +513,8 @@ END;
 $$;
 
 -- -----------------------------------------------------------------------------
--- Изменение количества: compare-and-swap по старому значению.
--- Старый запрос не перезапишет более новое значение.
+-- Изменение количества: compare-and-swap + цепочка item→group→dept→production.
+-- employee_id берётся только из сессии. История пишется в той же транзакции.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION update_item_quantity(
   p_token   text,
@@ -367,14 +529,21 @@ SET search_path = public
 AS $$
 DECLARE
   v_session     app_sessions;
+  v_employee_id uuid;
   v_item        items;
   v_updated     items;
   v_production  uuid;
 BEGIN
   v_session := _require_session(p_token, false);
+  v_employee_id := _require_employee(v_session);
 
   IF p_new_qty IS NULL OR p_new_qty < 0 THEN
     RETURN jsonb_build_object('ok', false, 'error', 'invalid_quantity');
+  END IF;
+
+  v_production := _production_id_for_item(p_item_id);
+  IF v_production IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'item_not_found');
   END IF;
 
   SELECT * INTO v_item FROM items WHERE id = p_item_id AND active = true;
@@ -399,15 +568,13 @@ BEGIN
     );
   END IF;
 
-  v_production := _production_id_for_item(p_item_id);
-
   INSERT INTO change_history (
     production_id, item_id, employee_id, item_name,
     old_value, new_value, difference
   ) VALUES (
     v_production,
     p_item_id,
-    v_session.employee_id,
+    v_employee_id,
     v_updated.name,
     p_old_qty,
     p_new_qty,
@@ -423,7 +590,7 @@ END;
 $$;
 
 -- -----------------------------------------------------------------------------
--- Записки
+-- Записки: author_id только из сессии
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION create_note(
   p_token         text,
@@ -441,9 +608,20 @@ DECLARE
   v_note    notes;
 BEGIN
   v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  IF v_session.role <> 'admin' THEN
+    PERFORM _require_employee(v_session);
+  END IF;
 
   IF p_text IS NULL OR length(trim(p_text)) = 0 THEN
     RETURN jsonb_build_object('ok', false, 'error', 'empty_text');
+  END IF;
+
+  IF p_assignee_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM employees WHERE id = p_assignee_id AND active = true
+  ) THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'assignee_not_found');
   END IF;
 
   INSERT INTO notes (production_id, text, author_id, assignee_id)
@@ -465,15 +643,26 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_session app_sessions;
-  v_note    notes;
+  v_session     app_sessions;
+  v_note        notes;
+  v_assignee_id uuid;
 BEGIN
   v_session := _require_session(p_token, false);
+  p_patch := COALESCE(p_patch, '{}'::jsonb) - 'author_id' - 'id' - 'production_id' - 'created_at';
+
+  IF p_patch ? 'assignee_id' THEN
+    v_assignee_id := NULLIF(p_patch->>'assignee_id', '')::uuid;
+    IF v_assignee_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM employees WHERE id = v_assignee_id AND active = true
+    ) THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'assignee_not_found');
+    END IF;
+  END IF;
 
   UPDATE notes
      SET text = COALESCE(p_patch->>'text', text),
          assignee_id = CASE
-           WHEN p_patch ? 'assignee_id' THEN NULLIF(p_patch->>'assignee_id', '')::uuid
+           WHEN p_patch ? 'assignee_id' THEN v_assignee_id
            ELSE assignee_id
          END,
          completed = CASE
@@ -502,6 +691,9 @@ DECLARE
 BEGIN
   v_session := _require_session(p_token, false);
   DELETE FROM notes WHERE id = p_note_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'note_not_found');
+  END IF;
   RETURN jsonb_build_object('ok', true);
 END;
 $$;
@@ -524,11 +716,18 @@ AS $$
 DECLARE
   v_session app_sessions;
   v_goal    daily_goals;
+  v_date    date;
 BEGIN
   v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  v_date := COALESCE(p_goal_date, CURRENT_DATE);
+  IF v_session.role <> 'admin' THEN
+    v_date := CURRENT_DATE;
+  END IF;
 
   INSERT INTO daily_goals (production_id, goal_date, target, label)
-  VALUES (p_production_id, p_goal_date, GREATEST(p_target, 0), COALESCE(NULLIF(p_label, ''), 'упакованных рамок'))
+  VALUES (p_production_id, v_date, GREATEST(COALESCE(p_target, 0), 0), COALESCE(NULLIF(p_label, ''), 'упакованных рамок'))
   ON CONFLICT (production_id, goal_date)
   DO UPDATE SET target = EXCLUDED.target, label = EXCLUDED.label
   RETURNING * INTO v_goal;
@@ -548,17 +747,20 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_session app_sessions;
-  v_fact    integer;
+  v_session     app_sessions;
+  v_employee_id uuid;
+  v_fact        integer;
 BEGIN
   v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+  v_employee_id := _require_employee(v_session);
 
-  IF p_quantity = 0 THEN
+  IF p_quantity IS NULL OR p_quantity = 0 THEN
     RETURN jsonb_build_object('ok', false, 'error', 'zero_quantity');
   END IF;
 
   INSERT INTO packed_history (production_id, employee_id, packed_date, quantity)
-  VALUES (p_production_id, v_session.employee_id, CURRENT_DATE, p_quantity);
+  VALUES (p_production_id, v_employee_id, CURRENT_DATE, p_quantity);
 
   SELECT COALESCE(SUM(quantity), 0) INTO v_fact
   FROM packed_history
@@ -566,7 +768,6 @@ BEGIN
     AND packed_date = CURRENT_DATE;
 
   IF v_fact < 0 THEN
-    -- не даём факту уйти ниже нуля: откатываем последнюю запись
     DELETE FROM packed_history
      WHERE id = (
        SELECT id FROM packed_history
@@ -574,8 +775,7 @@ BEGIN
        ORDER BY created_at DESC
        LIMIT 1
      );
-    v_fact := 0;
-    RETURN jsonb_build_object('ok', false, 'error', 'below_zero', 'fact', v_fact);
+    RETURN jsonb_build_object('ok', false, 'error', 'below_zero', 'fact', 0);
   END IF;
 
   RETURN jsonb_build_object('ok', true, 'fact', v_fact);
@@ -777,3 +977,278 @@ BEGIN
   RETURN jsonb_build_object('ok', true);
 END;
 $$;
+
+-- -----------------------------------------------------------------------------
+-- Чтение через RPC (прямой SELECT для anon закрыт)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app_get_employees(p_token text, p_include_inactive boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_rows    jsonb;
+BEGIN
+  v_session := _require_session(p_token, COALESCE(p_include_inactive, false));
+  SELECT COALESCE(jsonb_agg(to_jsonb(e) ORDER BY e.sort_order, e.name), '[]'::jsonb)
+    INTO v_rows
+    FROM employees e
+   WHERE p_include_inactive OR e.active = true;
+  RETURN jsonb_build_object('ok', true, 'rows', v_rows);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_productions(p_token text, p_include_inactive boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_rows    jsonb;
+BEGIN
+  v_session := _require_session(p_token, COALESCE(p_include_inactive, false));
+  SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY p.sort_order, p.name), '[]'::jsonb)
+    INTO v_rows
+    FROM productions p
+   WHERE p_include_inactive OR p.active = true;
+  RETURN jsonb_build_object('ok', true, 'rows', v_rows);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_tree(
+  p_token text,
+  p_production_id uuid,
+  p_include_inactive boolean DEFAULT false
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_tree    jsonb;
+BEGIN
+  v_session := _require_session(p_token, COALESCE(p_include_inactive, false));
+
+  IF p_production_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM productions WHERE id = p_production_id
+      AND (p_include_inactive OR active = true)
+  ) THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'production_not_found');
+  END IF;
+
+  SELECT COALESCE(jsonb_agg(dept_json ORDER BY sort_order), '[]'::jsonb)
+    INTO v_tree
+    FROM (
+      SELECT d.sort_order,
+             to_jsonb(d) || jsonb_build_object(
+               'groups', COALESCE((
+                 SELECT jsonb_agg(grp_json ORDER BY sort_order)
+                 FROM (
+                   SELECT g.sort_order,
+                          to_jsonb(g) || jsonb_build_object(
+                            'items', COALESCE((
+                              SELECT jsonb_agg(to_jsonb(i) ORDER BY i.sort_order)
+                              FROM items i
+                              WHERE i.group_id = g.id
+                                AND (p_include_inactive OR i.active)
+                            ), '[]'::jsonb)
+                          ) AS grp_json
+                   FROM item_groups g
+                   WHERE g.department_id = d.id
+                     AND (p_include_inactive OR g.active)
+                 ) groups_q
+               ), '[]'::jsonb)
+             ) AS dept_json
+      FROM departments d
+      WHERE d.production_id = p_production_id
+        AND (p_include_inactive OR d.active)
+    ) depts_q;
+
+  RETURN jsonb_build_object('ok', true, 'tree', v_tree);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_history(p_token text, p_production_id uuid, p_limit integer DEFAULT 80)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_rows    jsonb;
+BEGIN
+  v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  SELECT COALESCE(jsonb_agg(to_jsonb(h) ORDER BY h.created_at DESC), '[]'::jsonb)
+    INTO v_rows
+    FROM (
+      SELECT *
+      FROM change_history
+      WHERE production_id = p_production_id
+      ORDER BY created_at DESC
+      LIMIT GREATEST(LEAST(COALESCE(p_limit, 80), 200), 1)
+    ) h;
+
+  RETURN jsonb_build_object('ok', true, 'rows', v_rows);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_notes(p_token text, p_production_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_rows    jsonb;
+BEGIN
+  v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  SELECT COALESCE(jsonb_agg(to_jsonb(n) ORDER BY n.created_at DESC), '[]'::jsonb)
+    INTO v_rows
+    FROM notes n
+   WHERE n.production_id = p_production_id;
+
+  RETURN jsonb_build_object('ok', true, 'rows', v_rows);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_goal(p_token text, p_production_id uuid, p_date date)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_goal    jsonb;
+BEGIN
+  v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  SELECT to_jsonb(g) INTO v_goal
+  FROM daily_goals g
+  WHERE g.production_id = p_production_id
+    AND g.goal_date = COALESCE(p_date, CURRENT_DATE);
+
+  RETURN jsonb_build_object('ok', true, 'goal', v_goal);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_packed_fact(p_token text, p_production_id uuid, p_date date)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_fact    integer;
+BEGIN
+  v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  SELECT COALESCE(SUM(quantity), 0) INTO v_fact
+  FROM packed_history
+  WHERE production_id = p_production_id
+    AND packed_date = COALESCE(p_date, CURRENT_DATE);
+
+  RETURN jsonb_build_object('ok', true, 'fact', v_fact);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION app_get_packed_history(p_token text, p_production_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_session app_sessions;
+  v_rows    jsonb;
+BEGIN
+  v_session := _require_session(p_token, false);
+  PERFORM _assert_production(p_production_id);
+
+  SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY x.date DESC), '[]'::jsonb)
+    INTO v_rows
+    FROM (
+      SELECT d.dt::date AS date,
+             COALESCE(p.fact, 0) AS fact,
+             COALESCE(g.target, 0) AS target
+      FROM (
+        SELECT packed_date AS dt FROM packed_history WHERE production_id = p_production_id
+        UNION
+        SELECT goal_date FROM daily_goals WHERE production_id = p_production_id
+      ) d
+      LEFT JOIN (
+        SELECT packed_date, SUM(quantity) AS fact
+        FROM packed_history
+        WHERE production_id = p_production_id
+        GROUP BY packed_date
+      ) p ON p.packed_date = d.dt
+      LEFT JOIN daily_goals g
+        ON g.production_id = p_production_id AND g.goal_date = d.dt
+    ) x;
+
+  RETURN jsonb_build_object('ok', true, 'rows', v_rows);
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- Realtime: broadcast вместо публичного SELECT + postgres_changes
+-- -----------------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_live_items ON items;
+CREATE TRIGGER trg_live_items
+  AFTER INSERT OR UPDATE OR DELETE ON items
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_history ON change_history;
+CREATE TRIGGER trg_live_history
+  AFTER INSERT OR UPDATE OR DELETE ON change_history
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_notes ON notes;
+CREATE TRIGGER trg_live_notes
+  AFTER INSERT OR UPDATE OR DELETE ON notes
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_goals ON daily_goals;
+CREATE TRIGGER trg_live_goals
+  AFTER INSERT OR UPDATE OR DELETE ON daily_goals
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_packed ON packed_history;
+CREATE TRIGGER trg_live_packed
+  AFTER INSERT OR UPDATE OR DELETE ON packed_history
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_productions ON productions;
+CREATE TRIGGER trg_live_productions
+  AFTER INSERT OR UPDATE OR DELETE ON productions
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_departments ON departments;
+CREATE TRIGGER trg_live_departments
+  AFTER INSERT OR UPDATE OR DELETE ON departments
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_groups ON item_groups;
+CREATE TRIGGER trg_live_groups
+  AFTER INSERT OR UPDATE OR DELETE ON item_groups
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
+
+DROP TRIGGER IF EXISTS trg_live_employees ON employees;
+CREATE TRIGGER trg_live_employees
+  AFTER INSERT OR UPDATE OR DELETE ON employees
+  FOR EACH ROW EXECUTE PROCEDURE _notify_live();
