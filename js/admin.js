@@ -516,8 +516,11 @@
         }
         UI.showScreen("admin");
         renderMain();
-      } catch {
-        UI.$("#adminLoginError").textContent = "Нет связи с базой";
+      } catch (err) {
+        UI.$("#adminLoginError").textContent =
+          err && err.kind === "db_not_ready"
+            ? "База не обновлена. В SQL Editor выполните schema.sql, затем policies.sql."
+            : "Нет связи с базой";
       }
     });
 

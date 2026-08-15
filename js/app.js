@@ -146,7 +146,10 @@
         }
         await afterLogin();
       } catch (err) {
-        UI.$("#loginError").textContent = "Нет связи с базой";
+        UI.$("#loginError").textContent =
+          err && err.kind === "db_not_ready"
+            ? "База не обновлена. В SQL Editor выполните schema.sql, затем policies.sql."
+            : "Нет связи с базой";
       }
     });
 

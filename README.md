@@ -168,11 +168,11 @@ supabase/           schema.sql, policies.sql, seed.sql, security_test.sql
 
 1. `supabase/schema.sql`
 2. `supabase/policies.sql`
-3. `supabase/seed.sql`
+3. `supabase/seed.sql` — только при первой установке
+
+Если GitHub Pages уже открыт, а пароль `1980` даёт «Нет связи с базой» / «База не обновлена», в SQL Editor повторно выполните **только** `schema.sql` и `policies.sql` (seed не запускать). Нужны RPC `app_login(p_password, p_client_key)` и `app_get_*`; у `crypt()` должен быть виден schema `extensions`.
 
 По желанию: `supabase/security_test.sql` — в логе должно быть `SECURITY TESTS PASSED`.
-
-Если база уже была создана по предыдущей версии, повторно выполните **только** `schema.sql` и `policies.sql` (seed не запускать).
 
 ### 3. Ключи
 

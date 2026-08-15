@@ -22,20 +22,44 @@
   }
 
   async function rpc(name, args) {
-    const res = await client().rpc(name, args);
+    const c = client();
+    if (!c) {
+      throw new Error("supabase_not_configured");
+    }
+    const res = await c.rpc(name, args);
     if (res.error) {
       const err = new Error(res.error.message || "rpc_error");
       err.details = res.error;
+      if (isDbNotReady(res.error)) err.kind = "db_not_ready";
       throw err;
     }
     return res.data;
+  }
+
+  function isDbNotReady(errorOrMsg) {
+    const code = (errorOrMsg && errorOrMsg.code) || "";
+    const message = String(
+      (errorOrMsg && (errorOrMsg.message || errorOrMsg.details || errorOrMsg.hint)) || errorOrMsg || ""
+    );
+    return (
+      code === "PGRST202" ||
+      code === "42883" ||
+      /schema cache|Could not find the function|crypt\(text, text\) does not exist/i.test(message)
+    );
   }
 
   const RemoteDB = {
     mode: "supabase",
 
     async login(password, clientKey) {
-      return rpc("app_login", { p_password: password, p_client_key: clientKey || "" });
+      try {
+        return await rpc("app_login", { p_password: password, p_client_key: clientKey || "" });
+      } catch (e) {
+        if (e && e.kind === "db_not_ready" && /app_login\(p_client_key/i.test((e.details && e.details.message) || e.message || "")) {
+          return rpc("app_login", { p_password: password });
+        }
+        throw e;
+      }
     },
 
     async logout(tok) {
