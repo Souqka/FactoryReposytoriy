@@ -150,8 +150,8 @@
       return rpc("update_item_quantity", {
         p_token: tok,
         p_item_id: itemId,
-        p_old_qty: oldQty,
-        p_new_qty: newQty,
+        p_old_qty: Math.floor(Number(oldQty)),
+        p_new_qty: Math.floor(Number(newQty)),
       });
     },
 
