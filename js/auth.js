@@ -51,7 +51,12 @@
         });
         if (res.employee_id) State.setEmployee(res.employee_id);
         return true;
-      } catch {
+      } catch (err) {
+        const msg = String((err && err.message) || "");
+        if (/invalid_session|no_session/i.test(msg)) {
+          State.logout();
+          return false;
+        }
         return !!session.token;
       }
     },

@@ -476,32 +476,36 @@
     },
 
     syncFromItems(root) {
-      const host = root || UI.$("#panel-goals");
-      if (!host || !host.querySelector("[data-goal]")) return;
-      host.querySelectorAll("[data-goal]").forEach((card) => {
-        const id = card.getAttribute("data-goal");
-        const goal = goalsList().find((g) => g.id === id);
-        const select = card.querySelector("[data-goal-item]");
-        const current = select ? select.value : parseGoalMeta(goal).itemId;
-        const built = optionsHtml(current);
-        if (select) {
-          const keep = select.value;
-          select.innerHTML = built.html;
-          if (built.exists) select.value = keep || current;
-          else {
-            select.value = "";
-            if (current) persistCard(card);
+      try {
+        const host = root || UI.$("#panel-goals");
+        if (!host || !host.querySelector("[data-goal]")) return;
+        host.querySelectorAll("[data-goal]").forEach((card) => {
+          const id = card.getAttribute("data-goal");
+          const goal = goalsList().find((g) => g.id === id);
+          const select = card.querySelector("[data-goal-item]");
+          const current = select ? select.value : parseGoalMeta(goal).itemId;
+          const built = optionsHtml(current);
+          if (select) {
+            const keep = select.value;
+            select.innerHTML = built.html;
+            if (built.exists) select.value = keep || current;
+            else {
+              select.value = "";
+              if (current) persistCard(card);
+            }
           }
+          paintCard(card);
+        });
+        const needsHide = goalsList().some((g) => {
+          const s = statsFor(g);
+          const card = host.querySelector(`[data-goal="${g.id}"]`);
+          return !!s.done && !!card;
+        });
+        if (needsHide && !saving && !formBusy(host)) {
+          Goals.render(host, { force: true });
         }
-        paintCard(card);
-      });
-      const needsHide = goalsList().some((g) => {
-        const s = statsFor(g);
-        const card = host.querySelector(`[data-goal="${g.id}"]`);
-        return !!s.done && !!card;
-      });
-      if (needsHide && !saving && !formBusy(host)) {
-        Goals.render(host, { force: true });
+      } catch (err) {
+        console.warn("Goals.syncFromItems", err);
       }
     },
 

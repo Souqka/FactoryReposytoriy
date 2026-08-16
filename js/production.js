@@ -69,6 +69,33 @@
     refreshGroupSums(found.group);
   }
 
+  function qtyErrorText(err) {
+    const details = err && err.details;
+    const msg = String((details && (details.message || details.details)) || (err && err.message) || "");
+    if (/invalid_session|no_session/i.test(msg)) return "Сессия истекла. Войдите снова.";
+    if (/employee_required/i.test(msg)) return "Сначала выберите сотрудника.";
+    if (/employee_inactive/i.test(msg)) return "Сотрудник неактивен.";
+    if (err && err.kind === "db_not_ready") return "База не обновлена. Выполните SQL в Supabase.";
+    if (/Failed to fetch|NetworkError|network|Load failed|offline|supabase_not_configured/i.test(msg)) {
+      return "Нет связи — изменение сохранено локально";
+    }
+    return "Не удалось сохранить количество";
+  }
+
+  function isNetworkQtyError(err) {
+    const details = err && err.details;
+    const msg = String((details && (details.message || details.details)) || (err && err.message) || "");
+    return /Failed to fetch|NetworkError|network|Load failed|offline|supabase_not_configured/i.test(msg);
+  }
+
+  function syncGoalsFromItems() {
+    try {
+      if (typeof Goals !== "undefined") Goals.syncFromItems();
+    } catch (err) {
+      console.warn("Goals.syncFromItems", err);
+    }
+  }
+
   async function commitQty(itemId, newQty) {
     const found = findItem(itemId);
     if (!found || found.item.is_sum) return;
@@ -78,7 +105,7 @@
       setLocalQty(itemId, item.quantity);
       return;
     }
-    const oldQty = item.quantity;
+    const oldQty = Math.max(0, Math.floor(Number(item.quantity) || 0));
     setLocalQty(itemId, newQty);
 
     const job = { itemId, oldQty, newQty };
@@ -89,12 +116,18 @@
       return;
     }
 
+    if (DB.mode === "supabase" && !State.token()) {
+      setLocalQty(itemId, oldQty);
+      UI.toast("Сессия истекла. Войдите снова.", true);
+      return;
+    }
+
     try {
       const res = await DB.updateItemQuantity(State.token(), itemId, oldQty, newQty);
       if (res && res.ok) {
         setLocalQty(itemId, res.quantity, res.version);
         Offline.saveCache();
-        if (typeof Goals !== "undefined") Goals.syncFromItems();
+        syncGoalsFromItems();
         return;
       }
       if (res && res.error === "conflict") {
@@ -104,9 +137,14 @@
       }
       setLocalQty(itemId, oldQty);
       UI.toast("Не удалось сохранить", true);
-    } catch {
-      Offline.enqueueQty(job);
-      UI.toast("Нет связи — изменение сохранено локально", true);
+    } catch (err) {
+      if (isNetworkQtyError(err)) {
+        Offline.enqueueQty(job);
+        UI.toast("Нет связи — изменение сохранено локально", true);
+        return;
+      }
+      setLocalQty(itemId, oldQty);
+      UI.toast(qtyErrorText(err), true);
     }
   }
 
@@ -168,7 +206,7 @@
       Object.assign(found.item, row);
       paintItem(row.id);
       refreshGroupSums(found.group);
-      if (typeof Goals !== "undefined") Goals.syncFromItems();
+      syncGoalsFromItems();
       return true;
     },
 
