@@ -11,7 +11,10 @@
   }
 
   .qty-value {
-    min-width: 76px;
+    width: 96px;
+    min-width: 96px;
+    max-width: 96px;
+    flex-basis: 96px;
     font-size: 28px;
   }
 
@@ -86,8 +89,7 @@
   .icon-btn:hover,
   .person-btn:hover,
   .prod-btn:hover,
-  .qty-btn:hover,
-  .item-min:hover {
+  .qty-btn:hover {
     filter: brightness(1.08);
   }
 }
@@ -99,7 +101,6 @@
 .btn,
 .person-btn,
 .prod-btn,
-.reorder-btn,
-.item-min {
+.reorder-btn {
   touch-action: manipulation;
 }

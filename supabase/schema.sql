@@ -76,12 +76,15 @@ CREATE TABLE IF NOT EXISTS items (
   name       text NOT NULL,
   quantity   integer NOT NULL DEFAULT 0 CHECK (quantity >= 0),
   min_limit  integer NOT NULL DEFAULT 0 CHECK (min_limit >= 0),
+  is_sum     boolean NOT NULL DEFAULT false,
   active     boolean NOT NULL DEFAULT true,
   sort_order integer NOT NULL DEFAULT 0,
   version    integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE items ADD COLUMN IF NOT EXISTS is_sum boolean NOT NULL DEFAULT false;
 
 -- -----------------------------------------------------------------------------
 -- История изменений количества
@@ -107,10 +110,17 @@ CREATE TABLE IF NOT EXISTS notes (
   text          text NOT NULL,
   author_id     uuid REFERENCES employees(id) ON DELETE SET NULL,
   assignee_id   uuid REFERENCES employees(id) ON DELETE SET NULL,
+  assignee_ids  uuid[] NOT NULL DEFAULT '{}',
   completed     boolean NOT NULL DEFAULT false,
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS assignee_ids uuid[] NOT NULL DEFAULT '{}';
+UPDATE notes
+   SET assignee_ids = ARRAY[assignee_id]
+ WHERE assignee_id IS NOT NULL
+   AND (assignee_ids IS NULL OR assignee_ids = '{}');
 
 -- -----------------------------------------------------------------------------
 -- Дневные цели
@@ -121,10 +131,26 @@ CREATE TABLE IF NOT EXISTS daily_goals (
   goal_date     date NOT NULL DEFAULT CURRENT_DATE,
   target        integer NOT NULL DEFAULT 0 CHECK (target >= 0),
   label         text NOT NULL DEFAULT 'упакованных рамок',
+  sort_order    integer NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now(),
-  updated_at    timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (production_id, goal_date)
+  updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE daily_goals DROP CONSTRAINT IF EXISTS daily_goals_production_id_goal_date_key;
+ALTER TABLE daily_goals ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 0;
+DO $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN
+    SELECT c.conname
+    FROM pg_constraint c
+    WHERE c.conrelid = 'daily_goals'::regclass
+      AND c.contype = 'u'
+  LOOP
+    EXECUTE format('ALTER TABLE daily_goals DROP CONSTRAINT IF EXISTS %I', r.conname);
+  END LOOP;
+END $$;
 
 -- -----------------------------------------------------------------------------
 -- Факт упаковки по датам (история приращений)
@@ -361,7 +387,8 @@ BEGIN
         'min_limit', rec->'min_limit',
         'group_id', rec->>'group_id',
         'active', rec->'active',
-        'sort_order', rec->'sort_order'
+        'sort_order', rec->'sort_order',
+        'is_sum', rec->'is_sum'
       )
       ELSE jsonb_build_object('id', rec->>'id')
     END
@@ -555,6 +582,10 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'error', 'item_not_found');
   END IF;
 
+  IF COALESCE(v_item.is_sum, false) THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'sum_item');
+  END IF;
+
   UPDATE items
      SET quantity = p_new_qty,
          version = version + 1
@@ -608,8 +639,7 @@ DECLARE
   v_item        items;
   v_production  uuid;
 BEGIN
-  v_session := _require_session(p_token, false);
-  PERFORM _require_employee(v_session);
+  v_session := _require_session(p_token, true);
 
   IF p_min IS NULL OR p_min < 0 THEN
     RETURN jsonb_build_object('ok', false, 'error', 'invalid_min');
@@ -642,11 +672,14 @@ $$;
 -- -----------------------------------------------------------------------------
 -- Записки: author_id только из сессии
 -- -----------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS create_note(text, uuid, text, uuid);
+
 CREATE OR REPLACE FUNCTION create_note(
   p_token         text,
   p_production_id uuid,
   p_text          text,
-  p_assignee_id   uuid DEFAULT NULL
+  p_assignee_id   uuid DEFAULT NULL,
+  p_assignee_ids  uuid[] DEFAULT NULL
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -656,6 +689,7 @@ AS $$
 DECLARE
   v_session app_sessions;
   v_note    notes;
+  v_ids     uuid[];
 BEGIN
   v_session := _require_session(p_token, false);
   PERFORM _assert_production(p_production_id);
@@ -668,14 +702,27 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'error', 'empty_text');
   END IF;
 
-  IF p_assignee_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM employees WHERE id = p_assignee_id AND active = true
+  v_ids := COALESCE(p_assignee_ids, '{}');
+  IF p_assignee_id IS NOT NULL AND NOT (p_assignee_id = ANY (v_ids)) THEN
+    v_ids := array_append(v_ids, p_assignee_id);
+  END IF;
+  SELECT ARRAY(SELECT DISTINCT x FROM unnest(v_ids) AS x WHERE x IS NOT NULL) INTO v_ids;
+
+  IF EXISTS (
+    SELECT 1 FROM unnest(v_ids) AS x
+    WHERE NOT EXISTS (SELECT 1 FROM employees e WHERE e.id = x AND e.active = true)
   ) THEN
     RETURN jsonb_build_object('ok', false, 'error', 'assignee_not_found');
   END IF;
 
-  INSERT INTO notes (production_id, text, author_id, assignee_id)
-  VALUES (p_production_id, trim(p_text), v_session.employee_id, p_assignee_id)
+  INSERT INTO notes (production_id, text, author_id, assignee_id, assignee_ids)
+  VALUES (
+    p_production_id,
+    trim(p_text),
+    v_session.employee_id,
+    v_ids[1],
+    v_ids
+  )
   RETURNING * INTO v_note;
 
   RETURN jsonb_build_object('ok', true, 'note', to_jsonb(v_note));
@@ -693,27 +740,46 @@ SECURITY DEFINER
 SET search_path = public, extensions
 AS $$
 DECLARE
-  v_session     app_sessions;
-  v_note        notes;
-  v_assignee_id uuid;
+  v_session      app_sessions;
+  v_note         notes;
+  v_assignee_id  uuid;
+  v_ids          uuid[];
 BEGIN
   v_session := _require_session(p_token, false);
   p_patch := COALESCE(p_patch, '{}'::jsonb) - 'author_id' - 'id' - 'production_id' - 'created_at';
 
-  IF p_patch ? 'assignee_id' THEN
+  IF p_patch ? 'assignee_ids' THEN
+    SELECT ARRAY(
+      SELECT DISTINCT x::uuid
+      FROM jsonb_array_elements_text(COALESCE(p_patch->'assignee_ids', '[]'::jsonb)) AS x
+      WHERE x IS NOT NULL AND x <> ''
+    ) INTO v_ids;
+    IF EXISTS (
+      SELECT 1 FROM unnest(v_ids) AS x
+      WHERE NOT EXISTS (SELECT 1 FROM employees e WHERE e.id = x AND e.active = true)
+    ) THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'assignee_not_found');
+    END IF;
+    v_assignee_id := v_ids[1];
+  ELSIF p_patch ? 'assignee_id' THEN
     v_assignee_id := NULLIF(p_patch->>'assignee_id', '')::uuid;
     IF v_assignee_id IS NOT NULL AND NOT EXISTS (
       SELECT 1 FROM employees WHERE id = v_assignee_id AND active = true
     ) THEN
       RETURN jsonb_build_object('ok', false, 'error', 'assignee_not_found');
     END IF;
+    v_ids := CASE WHEN v_assignee_id IS NULL THEN '{}'::uuid[] ELSE ARRAY[v_assignee_id] END;
   END IF;
 
   UPDATE notes
      SET text = COALESCE(p_patch->>'text', text),
          assignee_id = CASE
-           WHEN p_patch ? 'assignee_id' THEN v_assignee_id
+           WHEN p_patch ? 'assignee_ids' OR p_patch ? 'assignee_id' THEN v_assignee_id
            ELSE assignee_id
+         END,
+         assignee_ids = CASE
+           WHEN p_patch ? 'assignee_ids' OR p_patch ? 'assignee_id' THEN v_ids
+           ELSE assignee_ids
          END,
          completed = CASE
            WHEN p_patch ? 'completed' THEN (p_patch->>'completed')::boolean
@@ -751,12 +817,15 @@ $$;
 -- -----------------------------------------------------------------------------
 -- Дневные цели и упаковка
 -- -----------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS upsert_daily_goal(text, uuid, date, integer, text);
+
 CREATE OR REPLACE FUNCTION upsert_daily_goal(
   p_token         text,
   p_production_id uuid,
   p_goal_date     date DEFAULT NULL,
   p_target        integer DEFAULT 0,
-  p_label         text DEFAULT 'упакованных рамок'
+  p_label         text DEFAULT 'упакованных рамок',
+  p_id            uuid DEFAULT NULL
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -767,6 +836,7 @@ DECLARE
   v_session app_sessions;
   v_goal    daily_goals;
   v_date    date;
+  v_order   integer;
 BEGIN
   v_session := _require_session(p_token, false);
   PERFORM _assert_production(p_production_id);
@@ -776,13 +846,52 @@ BEGIN
     v_date := CURRENT_DATE;
   END IF;
 
-  INSERT INTO daily_goals (production_id, goal_date, target, label)
-  VALUES (p_production_id, v_date, GREATEST(COALESCE(p_target, 0), 0), COALESCE(p_label, ''))
-  ON CONFLICT (production_id, goal_date)
-  DO UPDATE SET target = EXCLUDED.target, label = EXCLUDED.label
-  RETURNING * INTO v_goal;
+  IF p_id IS NOT NULL THEN
+    UPDATE daily_goals
+       SET target = GREATEST(COALESCE(p_target, 0), 0),
+           label = COALESCE(p_label, label)
+     WHERE id = p_id
+       AND production_id = p_production_id
+       AND goal_date = v_date
+    RETURNING * INTO v_goal;
+    IF NOT FOUND THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'goal_not_found');
+    END IF;
+  ELSE
+    SELECT COALESCE(MAX(sort_order), -1) + 1 INTO v_order
+    FROM daily_goals
+    WHERE production_id = p_production_id AND goal_date = v_date;
+
+    INSERT INTO daily_goals (production_id, goal_date, target, label, sort_order)
+    VALUES (
+      p_production_id,
+      v_date,
+      GREATEST(COALESCE(p_target, 0), 0),
+      COALESCE(p_label, ''),
+      v_order
+    )
+    RETURNING * INTO v_goal;
+  END IF;
 
   RETURN jsonb_build_object('ok', true, 'goal', to_jsonb(v_goal));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION delete_daily_goal(p_token text, p_goal_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+DECLARE
+  v_session app_sessions;
+BEGIN
+  v_session := _require_session(p_token, false);
+  DELETE FROM daily_goals WHERE id = p_goal_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'goal_not_found');
+  END IF;
+  RETURN jsonb_build_object('ok', true);
 END;
 $$;
 
@@ -910,21 +1019,44 @@ BEGIN
 
   ELSIF p_entity = 'item' THEN
     IF v_id IS NULL THEN
-      INSERT INTO items (group_id, name, quantity, min_limit, active, sort_order)
+      IF COALESCE((p_data->>'is_sum')::boolean, false)
+         AND EXISTS (
+           SELECT 1 FROM items
+           WHERE group_id = (p_data->>'group_id')::uuid
+             AND is_sum = true
+         ) THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'sum_exists');
+      END IF;
+      INSERT INTO items (group_id, name, quantity, min_limit, is_sum, active, sort_order)
       VALUES (
         (p_data->>'group_id')::uuid,
         COALESCE(NULLIF(p_data->>'name', ''), 'Новая позиция'),
         COALESCE((p_data->>'quantity')::integer, 0),
         COALESCE((p_data->>'min_limit')::integer, 0),
+        COALESCE((p_data->>'is_sum')::boolean, false),
         COALESCE((p_data->>'active')::boolean, true),
         COALESCE((p_data->>'sort_order')::integer, 0)
       )
       RETURNING * INTO r;
     ELSE
+      IF COALESCE((p_data->>'is_sum')::boolean, false)
+         AND EXISTS (
+           SELECT 1 FROM items
+           WHERE group_id = COALESCE(NULLIF(p_data->>'group_id', '')::uuid, (SELECT group_id FROM items WHERE id = v_id))
+             AND is_sum = true
+             AND id <> v_id
+         ) THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'sum_exists');
+      END IF;
       UPDATE items
          SET name = COALESCE(NULLIF(p_data->>'name', ''), name),
-             quantity = COALESCE((p_data->>'quantity')::integer, quantity),
+             quantity = CASE
+               WHEN COALESCE(is_sum, false) OR COALESCE((p_data->>'is_sum')::boolean, false)
+                 THEN quantity
+               ELSE COALESCE((p_data->>'quantity')::integer, quantity)
+             END,
              min_limit = COALESCE((p_data->>'min_limit')::integer, min_limit),
+             is_sum = COALESCE((p_data->>'is_sum')::boolean, is_sum),
              active = COALESCE((p_data->>'active')::boolean, active),
              sort_order = COALESCE((p_data->>'sort_order')::integer, sort_order),
              group_id = COALESCE(NULLIF(p_data->>'group_id', '')::uuid, group_id)
@@ -1103,10 +1235,25 @@ BEGIN
                    SELECT g.sort_order,
                           to_jsonb(g) || jsonb_build_object(
                             'items', COALESCE((
-                              SELECT jsonb_agg(to_jsonb(i) ORDER BY i.sort_order)
-                              FROM items i
-                              WHERE i.group_id = g.id
-                                AND (p_include_inactive OR i.active)
+                              SELECT jsonb_agg(item_json ORDER BY sort_order)
+                              FROM (
+                                SELECT i.sort_order,
+                                       to_jsonb(i) || jsonb_build_object(
+                                         'quantity', CASE
+                                           WHEN COALESCE(i.is_sum, false) THEN COALESCE((
+                                             SELECT SUM(s.quantity)
+                                             FROM items s
+                                             WHERE s.group_id = i.group_id
+                                               AND COALESCE(s.is_sum, false) = false
+                                               AND (p_include_inactive OR s.active)
+                                           ), 0)
+                                           ELSE i.quantity
+                                         END
+                                       ) AS item_json
+                                FROM items i
+                                WHERE i.group_id = g.id
+                                  AND (p_include_inactive OR i.active)
+                              ) items_q
                             ), '[]'::jsonb)
                           ) AS grp_json
                    FROM item_groups g
@@ -1181,17 +1328,18 @@ SET search_path = public, extensions
 AS $$
 DECLARE
   v_session app_sessions;
-  v_goal    jsonb;
+  v_goals   jsonb;
 BEGIN
   v_session := _require_session(p_token, false);
   PERFORM _assert_production(p_production_id);
 
-  SELECT to_jsonb(g) INTO v_goal
-  FROM daily_goals g
-  WHERE g.production_id = p_production_id
-    AND g.goal_date = COALESCE(p_date, CURRENT_DATE);
+  SELECT COALESCE(jsonb_agg(to_jsonb(g) ORDER BY g.sort_order, g.created_at), '[]'::jsonb)
+    INTO v_goals
+    FROM daily_goals g
+   WHERE g.production_id = p_production_id
+     AND g.goal_date = COALESCE(p_date, CURRENT_DATE);
 
-  RETURN jsonb_build_object('ok', true, 'goal', v_goal);
+  RETURN jsonb_build_object('ok', true, 'goals', v_goals, 'goal', v_goals->0);
 END;
 $$;
 
@@ -1235,8 +1383,20 @@ BEGIN
     FROM (
       SELECT d.dt::date AS date,
              COALESCE(p.fact, 0) AS fact,
-             COALESCE(g.target, 0) AS target,
-             COALESCE(g.label, '') AS label
+             COALESCE((
+               SELECT SUM(g.target)
+               FROM daily_goals g
+               WHERE g.production_id = p_production_id AND g.goal_date = d.dt
+             ), 0) AS target,
+             COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                 'id', g.id,
+                 'target', g.target,
+                 'label', g.label
+               ) ORDER BY g.sort_order, g.created_at)
+               FROM daily_goals g
+               WHERE g.production_id = p_production_id AND g.goal_date = d.dt
+             ), '[]'::jsonb) AS goals
       FROM (
         SELECT packed_date AS dt FROM packed_history WHERE production_id = p_production_id
         UNION
@@ -1248,8 +1408,6 @@ BEGIN
         WHERE production_id = p_production_id
         GROUP BY packed_date
       ) p ON p.packed_date = d.dt
-      LEFT JOIN daily_goals g
-        ON g.production_id = p_production_id AND g.goal_date = d.dt
     ) x;
 
   RETURN jsonb_build_object('ok', true, 'rows', v_rows);

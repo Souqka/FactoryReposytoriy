@@ -332,6 +332,7 @@
       </div>
       <div class="admin-toolbar">
         <h2>Позиции</h2>
+        <button type="button" class="btn" id="addSum">Добавить сумму группы</button>
         <button type="button" class="btn btn-primary" id="addItem">Добавить позицию</button>
       </div>
       <div class="config-list" id="itemRows"></div>
@@ -350,16 +351,25 @@
     });
     const host = UI.$("#itemRows", root);
     host.innerHTML = items
-      .map(
-        (it) => `
+      .map((it) => {
+        const qtyBlock = it.is_sum
+          ? `<p class="admin-hint" style="margin:8px 0 0">Σ Сумма группы — считается автоматически</p>`
+          : `<div class="qty-mini">
+                <label>Кол-во<input type="number" min="0" data-qty="${it.id}" value="${it.quantity}" /></label>
+                <label>Минимум<input type="number" min="0" data-min="${it.id}" value="${it.min_limit}" /></label>
+              </div>`;
+        const minOnly = it.is_sum
+          ? `<div class="qty-mini">
+                <label>Минимум<input type="number" min="0" data-min="${it.id}" value="${it.min_limit}" /></label>
+              </div>`
+          : "";
+        return `
         <div class="config-row" data-id="${it.id}">
           ${rowChrome(it.id).replace('<div class="grow"></div>', `
             <div class="grow">
               <input type="text" data-rename="${it.id}" value="${UI.escapeHtml(it.name)}" />
-              <div class="qty-mini">
-                <label>Кол-во<input type="number" min="0" data-qty="${it.id}" value="${it.quantity}" /></label>
-                <label>Минимум<input type="number" min="0" data-min="${it.id}" value="${it.min_limit}" /></label>
-              </div>
+              ${qtyBlock}
+              ${minOnly}
               <label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:13px;color:var(--muted)">
                 <input type="checkbox" data-active="${it.id}" ${it.active ? "checked" : ""} /> Активна
               </label>
@@ -367,13 +377,25 @@
                 <button type="button" class="mini-btn" data-del="${it.id}">Удалить</button>
               </div>
             </div>`)}
-        </div>`
-      )
+        </div>`;
+      })
       .join("");
 
     UI.$("#addItem", root).addEventListener("click", async () => {
-      await save("item", { group_id: group.id, name: "Новая позиция", quantity: 0, min_limit: 0, sort_order: items.length, active: true });
+      await save("item", { group_id: group.id, name: "Новая позиция", quantity: 0, min_limit: 0, is_sum: false, sort_order: items.length, active: true });
       renderItems(root);
+    });
+    UI.$("#addSum", root).addEventListener("click", async () => {
+      if (items.some((it) => it.is_sum)) {
+        UI.toast("В группе уже есть позиция-сумма", true);
+        return;
+      }
+      try {
+        await save("item", { group_id: group.id, name: "Сумма", quantity: 0, min_limit: 0, is_sum: true, sort_order: items.length, active: true });
+        renderItems(root);
+      } catch {
+        UI.toast("Не удалось добавить сумму группы", true);
+      }
     });
 
     const patch = async (id, data) => {

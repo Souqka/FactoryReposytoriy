@@ -71,10 +71,8 @@ REVOKE ALL ON FUNCTION app_logout(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION app_session(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION app_set_employee(text, uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION update_item_quantity(text, uuid, integer, integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION create_note(text, uuid, text, uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION update_note(text, uuid, jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION delete_note(text, uuid) FROM PUBLIC;
-REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION add_packed(text, uuid, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION admin_save(text, text, jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION admin_delete(text, text, uuid) FROM PUBLIC;
@@ -93,10 +91,8 @@ GRANT EXECUTE ON FUNCTION app_logout(text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION app_session(text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION app_set_employee(text, uuid) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION update_item_quantity(text, uuid, integer, integer) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION create_note(text, uuid, text, uuid) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION update_note(text, uuid, jsonb) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION delete_note(text, uuid) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION add_packed(text, uuid, integer) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION admin_save(text, text, jsonb) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION admin_delete(text, text, uuid) TO anon, authenticated;
@@ -114,6 +110,50 @@ DO $$
 BEGIN
   REVOKE ALL ON FUNCTION update_item_min_limit(text, uuid, integer) FROM PUBLIC;
   GRANT EXECUTE ON FUNCTION update_item_min_limit(text, uuid, integer) TO anon, authenticated;
+EXCEPTION
+  WHEN undefined_function THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  REVOKE ALL ON FUNCTION create_note(text, uuid, text, uuid, uuid[]) FROM PUBLIC;
+  GRANT EXECUTE ON FUNCTION create_note(text, uuid, text, uuid, uuid[]) TO anon, authenticated;
+  BEGIN
+    REVOKE ALL ON FUNCTION create_note(text, uuid, text, uuid) FROM PUBLIC, anon, authenticated;
+  EXCEPTION
+    WHEN undefined_function THEN NULL;
+  END;
+EXCEPTION
+  WHEN undefined_function THEN
+    BEGIN
+      GRANT EXECUTE ON FUNCTION create_note(text, uuid, text, uuid) TO anon, authenticated;
+    EXCEPTION
+      WHEN undefined_function THEN NULL;
+    END;
+END $$;
+
+DO $$
+BEGIN
+  REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) FROM PUBLIC;
+  GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) TO anon, authenticated;
+  BEGIN
+    REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) FROM PUBLIC, anon, authenticated;
+  EXCEPTION
+    WHEN undefined_function THEN NULL;
+  END;
+EXCEPTION
+  WHEN undefined_function THEN
+    BEGIN
+      GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) TO anon, authenticated;
+    EXCEPTION
+      WHEN undefined_function THEN NULL;
+    END;
+END $$;
+
+DO $$
+BEGIN
+  REVOKE ALL ON FUNCTION delete_daily_goal(text, uuid) FROM PUBLIC;
+  GRANT EXECUTE ON FUNCTION delete_daily_goal(text, uuid) TO anon, authenticated;
 EXCEPTION
   WHEN undefined_function THEN NULL;
 END $$;

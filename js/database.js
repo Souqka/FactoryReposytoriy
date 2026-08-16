@@ -65,8 +65,8 @@
     getNotes(id) {
       return this.adapter().getNotes(id);
     },
-    createNote(token, productionId, text, assigneeId) {
-      return this.adapter().createNote(token, productionId, text, assigneeId);
+    createNote(token, productionId, text, assigneeIds) {
+      return this.adapter().createNote(token, productionId, text, assigneeIds);
     },
     updateNote(token, noteId, patch) {
       return this.adapter().updateNote(token, noteId, patch);
@@ -74,11 +74,14 @@
     deleteNote(token, noteId) {
       return this.adapter().deleteNote(token, noteId);
     },
-    getGoal(id, date) {
-      return this.adapter().getGoal(id, date);
+    getGoals(id, date) {
+      return this.adapter().getGoals(id, date);
     },
-    upsertGoal(token, productionId, date, target, label) {
-      return this.adapter().upsertGoal(token, productionId, date, target, label);
+    upsertGoal(token, productionId, date, target, label, id) {
+      return this.adapter().upsertGoal(token, productionId, date, target, label, id);
+    },
+    deleteGoal(token, id) {
+      return this.adapter().deleteGoal(token, id);
     },
     addPacked(token, productionId, quantity) {
       return this.adapter().addPacked(token, productionId, quantity);
