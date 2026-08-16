@@ -56,6 +56,21 @@
     });
   }
 
+  function formatDayTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const day = new Date(d);
+    day.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - day) / 86400000);
+    if (diff === 0) return `Сегодня, ${time}`;
+    if (diff === 1) return `Вчера, ${time}`;
+    const date = d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+    return `${date}, ${time}`;
+  }
+
   function todayISO() {
     const d = new Date();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -99,6 +114,7 @@
     toggleTheme,
     bindThemeToggles,
     formatDateTime,
+    formatDayTime,
     todayISO,
     escapeHtml,
     parseNonNegInt,

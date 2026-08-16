@@ -132,7 +132,7 @@
     async getHistory(productionId, limit) {
       const res = await rpc("app_get_history", {
         p_token: token(),
-        p_production_id: productionId,
+        p_production_id: productionId || null,
         p_limit: limit || 80,
       });
       return unwrapOk(res, "rows") || [];
