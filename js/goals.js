@@ -49,6 +49,8 @@
         }
         if (part === "done:1" || part === "done") manualDone = true;
       });
+    } else if (/(^|\|)done:1(\||$)/.test(raw)) {
+      manualDone = true;
     }
     return { itemId, startQty, manualDone };
   }
@@ -190,7 +192,11 @@
     const itemId = select ? select.value : prev.itemId;
     const startQty = itemId && itemId === prev.itemId ? prev.startQty : null;
     const keepDone = !!(opts && opts.complete) || (prev.manualDone && !(opts && opts.clearDone));
-    const labelVal = encodeTrackedLabel(itemId, startQty, keepDone);
+    let labelVal = encodeTrackedLabel(itemId, startQty, keepDone);
+    if (!itemId) {
+      const raw = String((goal && goal.label) || "").replace(/\|?done:1/g, "");
+      labelVal = keepDone ? (raw ? raw + "|done:1" : "done:1") : raw;
+    }
     saving = true;
     try {
       const res = await DB.upsertGoal(State.token(), State.data.productionId, null, targetVal, labelVal, id);
