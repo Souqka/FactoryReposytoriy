@@ -620,7 +620,7 @@ body.qty-steppers-off .qty-btn {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 12px 14px 4px;
+  padding: 12px 14px 14px;
   margin-bottom: 14px;
 }
 
@@ -864,6 +864,17 @@ body.qty-steppers-off .qty-btn {
 
 .goal-card.is-done {
   border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+}
+
+.goal-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.goal-actions .btn {
+  min-height: 44px;
 }
 
 .hist-list {
