@@ -133,6 +133,25 @@
     return prod ? prod.id : null;
   }
 
+  function itemIdFromLabel(label) {
+    const raw = String(label || "");
+    if (raw.indexOf("item:") !== 0) return "";
+    return raw.slice(5).split("|")[0] || "";
+  }
+
+  function itemStockQty(itemId, productionId) {
+    if (!itemId) return null;
+    const item = db.items.find((i) => i.id === itemId);
+    if (!item) return null;
+    if (productionIdForItem(itemId) !== productionId) return null;
+    if (item.is_sum) {
+      return db.items
+        .filter((i) => i.group_id === item.group_id && !i.is_sum && i.active)
+        .reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
+    }
+    return Math.max(0, Number(item.quantity) || 0);
+  }
+
   function sortByOrder(list) {
     return [...list].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   }
@@ -289,6 +308,8 @@
     async getHistory(productionId, limit) {
       const rows = db.change_history
         .filter((h) => !productionId || h.production_id === productionId)
+        .slice()
+        .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
         .slice(0, limit || 80);
       return rows.map((h) => {
         const emp = db.employees.find((e) => e.id === h.employee_id);
@@ -366,14 +387,23 @@
         .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || "")));
     },
 
-    async upsertGoal(token, productionId, date, target, label, id) {
+    async upsertGoal(token, productionId, date, target, label, id, useExisting) {
       requireSession(token, false);
       const d = date || UI.todayISO();
-      const nextLabel = label == null ? "" : String(label);
+      let nextLabel = label == null ? "" : String(label);
+      let nextTarget = Math.max(0, Math.floor(Number(target) || 0));
+      if (useExisting) {
+        const itemId = itemIdFromLabel(nextLabel);
+        const start = itemStockQty(itemId, productionId);
+        if (start != null) {
+          nextTarget = Math.max(nextTarget - start, 0);
+          nextLabel = "item:" + itemId + "|start:" + start;
+        }
+      }
       if (id) {
         const goal = db.daily_goals.find((g) => g.id === id && g.production_id === productionId);
         if (!goal) return { ok: false, error: "goal_not_found" };
-        goal.target = target;
+        goal.target = nextTarget;
         goal.label = nextLabel;
         save();
         return { ok: true, goal };
@@ -383,7 +413,7 @@
         id: UI.uid(),
         production_id: productionId,
         goal_date: d,
-        target,
+        target: nextTarget,
         label: nextLabel,
         sort_order: order,
         created_at: new Date().toISOString(),
@@ -436,6 +466,11 @@
         .filter((p) => p.production_id === productionId)
         .forEach((p) => {
           map.set(p.packed_date, (map.get(p.packed_date) || 0) + p.quantity);
+        });
+      db.daily_goals
+        .filter((g) => g.production_id === productionId)
+        .forEach((g) => {
+          if (!map.has(g.goal_date)) map.set(g.goal_date, 0);
         });
       return Array.from(map.entries())
         .map(([date, fact]) => {
