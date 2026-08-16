@@ -25,7 +25,8 @@
     },
 
     renderList(root) {
-      const people = State.cache.employees;
+      if (!root) return;
+      const people = State.cache.employees || [];
       if (!people.length) {
         root.innerHTML = '<p class="empty">Нет активных сотрудников. Добавьте их в админ-панели.</p>';
         return;
