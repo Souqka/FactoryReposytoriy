@@ -30,13 +30,24 @@
               <p>Внутренняя система учёта</p>
             </div>
           </div>
-          <form id="loginForm">
+          <form id="loginForm" novalidate>
             <label class="field">
               <span>Пароль</span>
-              <input type="password" id="loginPassword" inputmode="numeric" autocomplete="current-password" required />
+              <input
+                type="password"
+                id="loginPassword"
+                name="factory-pin"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                enterkeyhint="go"
+              />
             </label>
             <p class="form-error" id="loginError"></p>
-            <button class="btn btn-primary btn-block" type="submit">Войти</button>
+            <button class="btn btn-primary btn-block" type="submit" id="loginSubmit">Войти</button>
           </form>
           <p class="setup-hint hidden" id="setupHint">
             Заполните <code>config/config.js</code> ключами Supabase.
@@ -47,7 +58,7 @@
     </section>
 
     <!-- Сотрудник -->
-    <section class="screen" id="screen-employee" data-screen="employee">
+    <section class="screen" id="screen-employee" data-screen="employee" inert aria-hidden="true">
       <header class="topbar">
         <button class="icon-btn" type="button" id="backFromEmployee" aria-label="Назад">←</button>
         <div class="title">Кто работает</div>
@@ -60,7 +71,7 @@
     </section>
 
     <!-- Производство -->
-    <section class="screen" id="screen-production-select" data-screen="production-select">
+    <section class="screen" id="screen-production-select" data-screen="production-select" inert aria-hidden="true">
       <header class="topbar">
         <button class="icon-btn" type="button" id="backFromProdSelect" aria-label="Назад">←</button>
         <div class="title">
@@ -76,7 +87,7 @@
     </section>
 
     <!-- Рабочий экран -->
-    <section class="screen" id="screen-workspace" data-screen="workspace">
+    <section class="screen" id="screen-workspace" data-screen="workspace" inert aria-hidden="true">
       <header class="topbar">
         <span class="status-led" id="connLed" title="Связь"></span>
         <div class="title">

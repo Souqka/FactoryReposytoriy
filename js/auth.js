@@ -73,7 +73,11 @@
     async pickEmployee(id) {
       State.setEmployee(id);
       if (State.token()) {
-        await DB.setEmployee(State.token(), id);
+        try {
+          await DB.setEmployee(State.token(), id);
+        } catch (e) {
+          console.warn("setEmployee:", e);
+        }
       }
     },
   };

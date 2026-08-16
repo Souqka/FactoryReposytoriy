@@ -11,8 +11,21 @@
   }
 
   function showScreen(name) {
+    const active = document.activeElement;
+    if (active && typeof active.blur === "function" && name !== "login") {
+      const onLogin = active.closest && active.closest("#screen-login");
+      if (onLogin) active.blur();
+    }
     $all(".screen").forEach((el) => {
-      el.classList.toggle("is-active", el.dataset.screen === name);
+      const on = el.dataset.screen === name;
+      el.classList.toggle("is-active", on);
+      if (on) {
+        el.removeAttribute("inert");
+        el.removeAttribute("aria-hidden");
+      } else {
+        el.setAttribute("inert", "");
+        el.setAttribute("aria-hidden", "true");
+      }
     });
   }
 

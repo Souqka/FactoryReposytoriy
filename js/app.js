@@ -118,7 +118,11 @@
   }
 
   async function afterLogin() {
-    await Employees.load();
+    try {
+      await Employees.load();
+    } catch (err) {
+      console.warn("Employees.load:", err);
+    }
     await renderEmployees();
     UI.showScreen("employee");
   }
@@ -128,10 +132,16 @@
   }
 
   async function renderProductions() {
-    const list = await DB.getProductions();
-    State.cache.productions = list;
-    Offline.saveCache();
+    let list = State.cache.productions || [];
+    try {
+      list = await DB.getProductions();
+      State.cache.productions = list;
+      Offline.saveCache();
+    } catch (err) {
+      console.warn("getProductions:", err);
+    }
     const root = UI.$("#productionList");
+    if (!root) return;
     if (!list.length) {
       root.innerHTML = '<p class="empty">Производств нет. Создайте их в админ-панели.</p>';
       return;
@@ -143,36 +153,64 @@
       )
       .join("");
     const emp = currentEmployee();
-    UI.$("#selectedEmployeeLabel").textContent = emp ? emp.name : "";
+    const label = UI.$("#selectedEmployeeLabel");
+    if (label) label.textContent = emp ? emp.name : "";
   }
 
   function bind() {
-    UI.$("#loginForm").addEventListener("submit", async (e) => {
+    const loginForm = UI.$("#loginForm");
+    const loginInput = UI.$("#loginPassword");
+    const loginSubmit = UI.$("#loginSubmit");
+    const loginError = UI.$("#loginError");
+
+    /* iOS: value often stays in the keyboard buffer until blur.
+       Blur on pointerdown so submit reads 1980 on the first tap. */
+    if (loginSubmit && loginInput) {
+      loginSubmit.addEventListener("pointerdown", () => {
+        loginInput.blur();
+      });
+    }
+
+    loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const password = UI.$("#loginPassword").value;
-      UI.$("#loginError").textContent = "";
+      if (loginInput) loginInput.blur();
+      const password = String((loginInput && loginInput.value) || "").trim();
+      loginError.textContent = "";
+      if (!password) {
+        loginError.textContent = "Введите пароль";
+        if (loginInput) loginInput.focus();
+        return;
+      }
+      if (loginSubmit) loginSubmit.disabled = true;
       try {
         const res = await Auth.login(password);
         if (!res.ok) {
-          UI.$("#loginError").textContent =
+          loginError.textContent =
             res.error === "too_many_attempts"
               ? "Слишком много попыток. Подождите 15 минут."
               : "Неверный пароль";
           return;
         }
+        if (loginInput) loginInput.value = "";
         await afterLogin();
       } catch (err) {
-        UI.$("#loginError").textContent =
+        loginError.textContent =
           err && err.kind === "db_not_ready"
             ? "База не обновлена. В SQL Editor выполните schema.sql, затем policies.sql."
             : "Нет связи с базой";
+      } finally {
+        if (loginSubmit) loginSubmit.disabled = false;
       }
     });
 
     UI.$("#employeeList").addEventListener("click", async (e) => {
       const btn = e.target.closest("[data-emp]");
       if (!btn) return;
-      await Auth.pickEmployee(btn.getAttribute("data-emp"));
+      try {
+        await Auth.pickEmployee(btn.getAttribute("data-emp"));
+      } catch (err) {
+        console.warn("pickEmployee:", err);
+      }
       await renderProductions();
       UI.showScreen("production-select");
     });
@@ -181,7 +219,12 @@
       const btn = e.target.closest("[data-prod]");
       if (!btn) return;
       State.setProduction(btn.getAttribute("data-prod"));
-      await openWorkspace();
+      try {
+        await openWorkspace();
+      } catch (err) {
+        console.warn("openWorkspace:", err);
+        UI.showScreen("workspace");
+      }
     });
 
     UI.$("#backFromEmployee").addEventListener("click", async () => {
