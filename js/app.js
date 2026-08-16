@@ -47,12 +47,14 @@
         State.cache.history = cached.history;
         State.cache.notes = cached.notes;
         State.cache.goal = cached.goal;
+        State.cache.goals = cached.goals || (cached.goal ? [cached.goal] : []);
         State.cache.packedFact = cached.packedFact;
         UI.toast("Показаны сохранённые данные", true);
       }
     }
     renderActivePanel();
     Offline.renderStatus();
+    if (typeof Notes !== "undefined") Notes.notifyIfAssigned();
   }
 
   function renderActivePanel() {
@@ -94,6 +96,7 @@
       }
       if (evt.table === "notes") {
         await Notes.load(State.data.productionId);
+        Notes.notifyIfAssigned();
         if (State.data.panel === "notes") Notes.render(UI.$("#panel-notes"));
         return;
       }
@@ -245,6 +248,7 @@
       State.cache.history = cached.history || [];
       State.cache.notes = cached.notes || [];
       State.cache.goal = cached.goal;
+      State.cache.goals = cached.goals || (cached.goal ? [cached.goal] : []);
       State.cache.packedFact = cached.packedFact || 0;
     }
 

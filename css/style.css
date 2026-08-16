@@ -253,7 +253,12 @@ label.field {
   margin-bottom: 16px;
 }
 
-label.field span {
+.field {
+  margin-bottom: 16px;
+}
+
+label.field span,
+.field > span {
   display: block;
   margin-bottom: 6px;
   font-size: 13px;
@@ -478,21 +483,31 @@ textarea {
   flex-shrink: 0;
   margin: 0;
   padding: 4px 0;
-  min-height: 0;
-  border: 0;
-  background: transparent;
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
   line-height: 1.3;
-  cursor: pointer;
   text-align: right;
-  touch-action: manipulation;
 }
 
 .item.is-crit .item-min {
   color: var(--crit);
   font-weight: 650;
+}
+
+.item.is-sum .qty-btn {
+  display: none !important;
+}
+
+.item.is-sum .qty-value {
+  cursor: default;
+}
+
+.sum-mark {
+  display: inline-block;
+  margin-right: 2px;
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .min-val {
@@ -537,7 +552,10 @@ textarea {
 }
 
 .qty-value {
-  min-width: 88px;
+  width: 104px;
+  min-width: 104px;
+  max-width: 104px;
+  flex: 0 0 104px;
   min-height: 56px;
   display: flex;
   align-items: center;
@@ -551,18 +569,30 @@ textarea {
   border-radius: 12px;
   cursor: text;
   touch-action: manipulation;
+  overflow: hidden;
 }
 
 .qty-value input {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 56px;
   border: 0;
   background: transparent;
   text-align: center;
   font-family: var(--mono);
-  font-size: 32px;
+  font-size: 28px;
   font-weight: 600;
-  padding: 0;
+  padding: 0 4px;
+  box-sizing: border-box;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.qty-value input::-webkit-outer-spin-button,
+.qty-value input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 body.qty-steppers-off .qty-btn {
@@ -572,6 +602,98 @@ body.qty-steppers-off .qty-btn {
 .plan-title {
   margin: 8px 4px 4px;
   font-size: 16px;
+}
+
+.plan-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.plan-toolbar .plan-title {
+  margin: 8px 4px 4px 0;
+  flex: 1;
+}
+
+.goal-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px 4px;
+  margin-bottom: 14px;
+}
+
+.goal-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.goal-card-head .lede {
+  flex: 1;
+  padding: 0;
+}
+
+.goal-card-head .btn {
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.assignee-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chip-check:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+}
+
+.chip-check input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+}
+
+.note.is-mine {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.dock button {
+  position: relative;
+}
+
+.dock-badge {
+  position: absolute;
+  top: 2px;
+  right: calc(50% - 28px);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--crit);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
 }
 
 .plan-history-title {

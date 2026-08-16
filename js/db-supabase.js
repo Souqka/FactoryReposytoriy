@@ -146,13 +146,26 @@
       return unwrapOk(res, "rows") || [];
     },
 
-    async createNote(tok, productionId, text, assigneeId) {
-      return rpc("create_note", {
-        p_token: tok,
-        p_production_id: productionId,
-        p_text: text,
-        p_assignee_id: assigneeId || null,
-      });
+    async createNote(tok, productionId, text, assigneeIds) {
+      const ids = Array.isArray(assigneeIds) ? assigneeIds.filter(Boolean) : assigneeIds ? [assigneeIds] : [];
+      try {
+        return await rpc("create_note", {
+          p_token: tok,
+          p_production_id: productionId,
+          p_text: text,
+          p_assignee_ids: ids.length ? ids : null,
+        });
+      } catch (e) {
+        if (e && e.kind === "db_not_ready") {
+          return rpc("create_note", {
+            p_token: tok,
+            p_production_id: productionId,
+            p_text: text,
+            p_assignee_id: ids[0] || null,
+          });
+        }
+        throw e;
+      }
     },
 
     async updateNote(tok, noteId, patch) {
@@ -167,24 +180,44 @@
       return rpc("delete_note", { p_token: tok, p_note_id: noteId });
     },
 
-    async getGoal(productionId, date) {
+    async getGoals(productionId, date) {
       const res = await rpc("app_get_goal", {
         p_token: token(),
         p_production_id: productionId,
         p_date: date || null,
       });
       unwrapOk(res);
-      return res.goal || null;
+      if (Array.isArray(res.goals)) return res.goals.filter(Boolean);
+      return res.goal ? [res.goal] : [];
     },
 
-    async upsertGoal(tok, productionId, date, target, label) {
-      return rpc("upsert_daily_goal", {
+    async upsertGoal(tok, productionId, date, target, label, id) {
+      const args = {
         p_token: tok,
         p_production_id: productionId,
         p_goal_date: date || null,
         p_target: target,
         p_label: label || "",
-      });
+      };
+      if (id) args.p_id = id;
+      try {
+        return await rpc("upsert_daily_goal", args);
+      } catch (e) {
+        if (id && e && e.kind === "db_not_ready") {
+          return rpc("upsert_daily_goal", {
+            p_token: tok,
+            p_production_id: productionId,
+            p_goal_date: date || null,
+            p_target: target,
+            p_label: label || "",
+          });
+        }
+        throw e;
+      }
+    },
+
+    async deleteGoal(tok, id) {
+      return rpc("delete_daily_goal", { p_token: tok, p_goal_id: id });
     },
 
     async addPacked(tok, productionId, quantity) {

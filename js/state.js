@@ -52,6 +52,7 @@
       history: [],
       notes: [],
       goal: null,
+      goals: [],
       packedFact: 0,
     },
     setTheme(theme) {

@@ -24,17 +24,40 @@
     return null;
   }
 
+  function groupSum(group) {
+    return (group.items || [])
+      .filter((i) => !i.is_sum)
+      .reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
+  }
+
+  function displayQty(item, group) {
+    if (item && item.is_sum) return groupSum(group);
+    return item ? item.quantity : 0;
+  }
+
+  function refreshGroupSums(group) {
+    if (!group) return;
+    const sum = groupSum(group);
+    (group.items || [])
+      .filter((i) => i.is_sum)
+      .forEach((item) => {
+        item.quantity = sum;
+        paintItem(item.id);
+      });
+  }
+
   function paintItem(itemId) {
     const found = findItem(itemId);
     if (!found) return;
     const el = document.querySelector(`[data-item="${itemId}"]`);
     if (!el) return;
     const item = found.item;
-    el.classList.toggle("is-crit", item.quantity <= item.min_limit);
+    const qty = displayQty(item, found.group);
+    el.classList.toggle("is-crit", qty <= item.min_limit);
     const val = el.querySelector(".qty-value");
-    if (val && !val.querySelector("input")) val.textContent = String(item.quantity);
+    if (val && !val.querySelector("input")) val.textContent = String(qty);
     const minVal = el.querySelector(".min-val");
-    if (minVal && !minVal.querySelector("input")) minVal.textContent = String(item.min_limit);
+    if (minVal) minVal.textContent = String(item.min_limit);
   }
 
   function setLocalQty(itemId, qty, version) {
@@ -43,19 +66,12 @@
     found.item.quantity = qty;
     if (version != null) found.item.version = version;
     paintItem(itemId);
-  }
-
-  function setLocalMin(itemId, minLimit, version) {
-    const found = findItem(itemId);
-    if (!found) return;
-    found.item.min_limit = minLimit;
-    if (version != null) found.item.version = version;
-    paintItem(itemId);
+    refreshGroupSums(found.group);
   }
 
   async function commitQty(itemId, newQty) {
     const found = findItem(itemId);
-    if (!found) return;
+    if (!found || found.item.is_sum) return;
     const item = found.item;
     newQty = Math.max(0, Math.floor(Number(newQty)));
     if (!Number.isFinite(newQty) || newQty === item.quantity) {
@@ -94,41 +110,10 @@
     }
   }
 
-  async function commitMin(itemId, newMin) {
-    const found = findItem(itemId);
-    if (!found) return;
-    const item = found.item;
-    newMin = UI.parseNonNegInt(newMin, item.min_limit);
-    if (newMin === item.min_limit) {
-      paintItem(itemId);
-      return;
-    }
-    const oldMin = item.min_limit;
-    setLocalMin(itemId, newMin);
-
-    try {
-      const res = await DB.updateItemMinLimit(State.token(), itemId, newMin);
-      if (res && res.ok) {
-        setLocalMin(itemId, res.min_limit, res.version);
-        Offline.saveCache();
-        return;
-      }
-      setLocalMin(itemId, oldMin);
-      UI.toast("Не удалось сохранить минимум", true);
-    } catch (err) {
-      setLocalMin(itemId, oldMin);
-      UI.toast(
-        err && err.kind === "db_not_ready"
-          ? "База не обновлена. В SQL Editor выполните schema.sql, затем policies.sql."
-          : "Не удалось сохранить минимум",
-        true
-      );
-    }
-  }
-
   function startEdit(itemEl, item) {
+    if (item.is_sum) return;
     const box = itemEl.querySelector(".qty-value");
-    if (box.querySelector("input")) return;
+    if (!box || box.querySelector("input")) return;
     const input = document.createElement("input");
     input.type = "number";
     input.inputMode = "numeric";
@@ -159,42 +144,6 @@
     });
   }
 
-  function startMinEdit(itemEl, item) {
-    const box = itemEl.querySelector(".min-val");
-    if (!box || box.querySelector("input")) return;
-    const input = document.createElement("input");
-    input.type = "number";
-    input.inputMode = "numeric";
-    input.min = "0";
-    input.step = "1";
-    input.value = String(item.min_limit);
-    input.className = "min-input";
-    box.textContent = "";
-    box.appendChild(input);
-    input.focus();
-    input.select();
-
-    const finish = () => {
-      const raw = input.value;
-      const next = raw === "" ? item.min_limit : UI.parseNonNegInt(raw, item.min_limit);
-      enqueue(item.id, () => commitMin(item.id, next));
-    };
-
-    input.addEventListener("click", (e) => e.stopPropagation());
-    input.addEventListener("blur", finish, { once: true });
-    input.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") {
-        e.preventDefault();
-        input.blur();
-      }
-      if (e.key === "Escape") {
-        input.value = String(item.min_limit);
-        input.blur();
-      }
-    });
-  }
-
   function colClass(count) {
     if (count <= 1) return "is-cols-1";
     if (count === 2) return "is-cols-2";
@@ -202,8 +151,10 @@
   }
 
   const Production = {
+    displayQty,
     async load(productionId) {
       const tree = await DB.getTree(productionId);
+      (tree || []).forEach((dept) => (dept.groups || []).forEach(refreshGroupSums));
       State.cache.tree = tree;
       Offline.saveCache();
       return tree;
@@ -216,6 +167,7 @@
       if ((row.version || 0) < (found.item.version || 0)) return true;
       Object.assign(found.item, row);
       paintItem(row.id);
+      refreshGroupSums(found.group);
       if (typeof Goals !== "undefined") Goals.syncFromItems();
       return true;
     },
@@ -232,18 +184,18 @@
             .map((group) => {
               const items = (group.items || [])
                 .map((item) => {
-                  const crit = item.quantity <= item.min_limit;
+                  const qty = displayQty(item, group);
+                  const crit = qty <= item.min_limit;
+                  const sumClass = item.is_sum ? " is-sum" : "";
                   return `
-                    <div class="item ${crit ? "is-crit" : ""}" data-item="${item.id}">
+                    <div class="item ${crit ? "is-crit" : ""}${sumClass}" data-item="${item.id}">
                       <div class="item-head">
-                        <div class="item-name">${UI.escapeHtml(item.name)}</div>
-                        <button type="button" class="item-min" data-edit-min>
-                          Минимум: <span class="min-val">${item.min_limit}</span>
-                        </button>
+                        <div class="item-name">${item.is_sum ? "<span class=\"sum-mark\">Σ</span> " : ""}${UI.escapeHtml(item.name)}</div>
+                        <span class="item-min">Минимум: <span class="min-val">${item.min_limit}</span></span>
                       </div>
                       <div class="qty-row">
                         <button type="button" class="qty-btn" data-delta="-1" aria-label="Уменьшить">−</button>
-                        <div class="qty-value" data-edit>${item.quantity}</div>
+                        <div class="qty-value"${item.is_sum ? "" : " data-edit"}>${qty}</div>
                         <button type="button" class="qty-btn" data-delta="1" aria-label="Увеличить">+</button>
                       </div>
                     </div>`;
@@ -266,22 +218,18 @@
             const delta = parseInt(btn.getAttribute("data-delta"), 10);
             enqueue(id, () => {
               const found = findItem(id);
-              if (!found) return;
+              if (!found || found.item.is_sum) return;
               return commitQty(id, found.item.quantity + delta);
             });
           });
         });
         const value = el.querySelector("[data-edit]");
-        value.addEventListener("click", () => {
-          const found = findItem(id);
-          if (found) startEdit(el, found.item);
-        });
-        const minBtn = el.querySelector("[data-edit-min]");
-        minBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          const found = findItem(id);
-          if (found) startMinEdit(el, found.item);
-        });
+        if (value) {
+          value.addEventListener("click", () => {
+            const found = findItem(id);
+            if (found) startEdit(el, found.item);
+          });
+        }
       });
     },
   };

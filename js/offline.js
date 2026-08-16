@@ -31,6 +31,7 @@
             history: State.cache.history,
             notes: State.cache.notes,
             goal: State.cache.goal,
+            goals: State.cache.goals,
             packedFact: State.cache.packedFact,
             productionId: State.data.productionId,
           })

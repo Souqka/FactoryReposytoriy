@@ -249,6 +249,7 @@
       if (!productionId) return { ok: false, error: "item_not_found" };
       const item = db.items.find((i) => i.id === itemId);
       if (!item || !item.active) return { ok: false, error: "item_not_found" };
+      if (item.is_sum) return { ok: false, error: "sum_item" };
       if (item.quantity !== oldQty) {
         return { ok: false, error: "conflict", quantity: item.quantity, version: item.version };
       }
@@ -271,8 +272,7 @@
     },
 
     async updateItemMinLimit(token, itemId, minLimit) {
-      const session = requireSession(token, false);
-      if (!session.employee_id) return { ok: false, error: "employee_required" };
+      requireSession(token, true);
       const min = UI.parseNonNegInt(minLimit, NaN);
       if (!Number.isFinite(min)) return { ok: false, error: "invalid_min" };
       const productionId = productionIdForItem(itemId);
@@ -298,14 +298,16 @@
         .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     },
 
-    async createNote(token, productionId, text, assigneeId) {
+    async createNote(token, productionId, text, assigneeIds) {
       const s = requireSession(token, false);
+      const ids = Array.isArray(assigneeIds) ? assigneeIds.filter(Boolean) : assigneeIds ? [assigneeIds] : [];
       const note = {
         id: UI.uid(),
         production_id: productionId,
         text: String(text || "").trim(),
         author_id: s.employee_id,
-        assignee_id: assigneeId || null,
+        assignee_id: ids[0] || null,
+        assignee_ids: ids,
         completed: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -320,7 +322,15 @@
       const note = db.notes.find((n) => n.id === noteId);
       if (!note) return { ok: false, error: "note_not_found" };
       if (patch.text != null) note.text = patch.text;
-      if ("assignee_id" in patch) note.assignee_id = patch.assignee_id || null;
+      if ("assignee_ids" in patch) {
+        const ids = Array.isArray(patch.assignee_ids) ? patch.assignee_ids.filter(Boolean) : [];
+        note.assignee_ids = ids;
+        note.assignee_id = ids[0] || null;
+      }
+      if ("assignee_id" in patch) {
+        note.assignee_id = patch.assignee_id || null;
+        note.assignee_ids = note.assignee_id ? [note.assignee_id] : [];
+      }
       if (patch.completed != null) note.completed = !!patch.completed;
       note.updated_at = new Date().toISOString();
       save();
@@ -334,25 +344,47 @@
       return { ok: true };
     },
 
-    async getGoal(productionId, date) {
+    async getGoals(productionId, date) {
       const d = date || UI.todayISO();
-      return db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === d) || null;
+      return db.daily_goals
+        .filter((g) => g.production_id === productionId && g.goal_date === d)
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || "")));
     },
 
-    async upsertGoal(token, productionId, date, target, label) {
+    async upsertGoal(token, productionId, date, target, label, id) {
       requireSession(token, false);
       const d = date || UI.todayISO();
       const nextLabel = label == null ? "" : String(label);
-      let goal = db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === d);
-      if (!goal) {
-        goal = { id: UI.uid(), production_id: productionId, goal_date: d, target, label: nextLabel };
-        db.daily_goals.push(goal);
-      } else {
+      if (id) {
+        const goal = db.daily_goals.find((g) => g.id === id && g.production_id === productionId);
+        if (!goal) return { ok: false, error: "goal_not_found" };
         goal.target = target;
         goal.label = nextLabel;
+        save();
+        return { ok: true, goal };
       }
+      const order = db.daily_goals.filter((g) => g.production_id === productionId && g.goal_date === d).length;
+      const goal = {
+        id: UI.uid(),
+        production_id: productionId,
+        goal_date: d,
+        target,
+        label: nextLabel,
+        sort_order: order,
+        created_at: new Date().toISOString(),
+      };
+      db.daily_goals.push(goal);
       save();
       return { ok: true, goal };
+    },
+
+    async deleteGoal(token, id) {
+      requireSession(token, false);
+      const before = db.daily_goals.length;
+      db.daily_goals = db.daily_goals.filter((g) => g.id !== id);
+      if (db.daily_goals.length === before) return { ok: false, error: "goal_not_found" };
+      save();
+      return { ok: true };
     },
 
     async addPacked(token, productionId, quantity) {
@@ -392,8 +424,13 @@
         });
       return Array.from(map.entries())
         .map(([date, fact]) => {
-          const goal = db.daily_goals.find((g) => g.production_id === productionId && g.goal_date === date);
-          return { date, fact, target: goal ? goal.target : 0, label: goal ? goal.label : "" };
+          const dayGoals = db.daily_goals.filter((g) => g.production_id === productionId && g.goal_date === date);
+          return {
+            date,
+            fact,
+            target: dayGoals.reduce((s, g) => s + (g.target || 0), 0),
+            goals: dayGoals.map((g) => ({ id: g.id, target: g.target, label: g.label })),
+          };
         })
         .sort((a, b) => (a.date < b.date ? 1 : -1));
     },
@@ -409,6 +446,11 @@
       };
       const table = tables[entity];
       if (!table) return { ok: false, error: "unknown_entity" };
+      if (entity === "item" && data.is_sum) {
+        const gid = data.group_id || (data.id && (db.items.find((i) => i.id === data.id) || {}).group_id);
+        const dup = db.items.some((i) => i.group_id === gid && i.is_sum && i.id !== data.id);
+        if (dup) return { ok: false, error: "sum_exists" };
+      }
       if (data.id) {
         const row = db[table].find((r) => r.id === data.id);
         if (!row) return { ok: false, error: "not_found" };
@@ -420,7 +462,7 @@
         production: { name: "Новое производство", active: true, sort_order: db.productions.length },
         department: { name: "Новый отдел", icon: "📦", active: true, sort_order: 0 },
         group: { name: "Новая группа", active: true, sort_order: 0 },
-        item: { name: "Новая позиция", quantity: 0, min_limit: 0, active: true, sort_order: 0, version: 1 },
+        item: { name: "Новая позиция", quantity: 0, min_limit: 0, is_sum: false, active: true, sort_order: 0, version: 1 },
         employee: { name: "Новый сотрудник", color: "#64748b", active: true, sort_order: db.employees.length, created_at: new Date().toISOString() },
       };
       const row = { id: UI.uid(), ...defaults[entity], ...data };
