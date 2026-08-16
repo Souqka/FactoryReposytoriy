@@ -68,6 +68,12 @@
     return `${item.deptName} / ${item.groupName} / ${sum}${item.name}`;
   }
 
+  function pathLabel(item) {
+    if (!item) return "позиция не выбрана";
+    const sum = item.is_sum ? "Σ " : "";
+    return [item.deptName, item.groupName, sum + item.name].filter(Boolean).join("\\");
+  }
+
   function findTracked(itemId) {
     if (!itemId) return null;
     return flattenItems().find((i) => i.id === itemId) || null;
@@ -160,7 +166,7 @@
     if (f) f.textContent = String(s.fact);
     if (l) l.textContent = String(s.left);
     const nameEl = card.querySelector(".plan-track-name");
-    if (nameEl) nameEl.textContent = s.item ? s.item.name : "позиция не выбрана";
+    if (nameEl) nameEl.textContent = pathLabel(s.item);
     card.classList.toggle("is-done", !!s.done);
     const badge = card.querySelector("[data-plan-status]");
     if (badge) badge.classList.toggle("hidden", !s.done);
@@ -234,7 +240,7 @@
         if (!ok) return;
         editing.delete(card.getAttribute("data-goal"));
         UI.toast("План выполнен");
-        await Goals.render(cardRoot(card));
+        await Goals.render(cardRoot(card), { force: true });
       });
     }
     const editBtn = card.querySelector("[data-goal-edit]");
@@ -248,14 +254,14 @@
         } else {
           editing.add(id);
         }
-        await Goals.render(cardRoot(card));
+        await Goals.render(cardRoot(card), { force: true });
       });
     }
     const cancelBtn = card.querySelector("[data-goal-cancel]");
     if (cancelBtn) {
       cancelBtn.addEventListener("click", async () => {
         editing.delete(card.getAttribute("data-goal"));
-        await Goals.render(cardRoot(card));
+        await Goals.render(cardRoot(card), { force: true });
       });
     }
     const del = card.querySelector("[data-goal-del]");
@@ -267,7 +273,7 @@
           editing.delete(id);
           State.cache.goals = goalsList().filter((g) => g.id !== id);
           Offline.saveCache();
-          await Goals.render(cardRoot(card));
+          await Goals.render(cardRoot(card), { force: true });
         } catch {
           UI.toast("Не удалось удалить цель", true);
         }
@@ -307,7 +313,7 @@
     return `
       <article class="goal-card${doneClass}" data-goal="${goal.id}">
         <div class="goal-card-head">
-          <p class="lede"><span class="plan-track-name">${UI.escapeHtml(s.item ? s.item.name : "позиция не выбрана")}</span></p>
+          <p class="lede"><span class="plan-track-name">${UI.escapeHtml(pathLabel(s.item))}</span></p>
         </div>
         <p class="plan-done${s.done ? "" : " hidden"}" data-plan-status>✅ План выполнен</p>
         <div class="goal-grid">
@@ -330,7 +336,7 @@
         const have = UI.parseNonNegInt(item.quantity, 0);
         const extra = Math.max(want - have, 0);
         return `<div class="plan-preview-row">
-          <b>${UI.escapeHtml(item.name)}</b>
+          <b>${UI.escapeHtml(pathLabel(item))}</b>
           <span>Уже есть: ${have} → дополнительно: ${extra}</span>
         </div>`;
       })
@@ -403,14 +409,14 @@
       addRow.addEventListener("click", () => {
         readComposer(root);
         composerRows.push({ itemId: "", target: "" });
-        Goals.render(root);
+        Goals.render(root, { force: true });
       });
     }
     const cancel = UI.$("#composeCancel", form);
     if (cancel) {
       cancel.addEventListener("click", () => {
         composerOpen = false;
-        Goals.render(root);
+        Goals.render(root, { force: true });
       });
     }
     form.addEventListener("submit", async (e) => {
@@ -438,9 +444,11 @@
         }
         composerOpen = false;
         composerUseExisting = false;
+        composerRows = [{ itemId: "", target: "" }];
         UI.toast("План создан");
+        saving = false;
         await Goals.load(State.data.productionId);
-        await Goals.render(root);
+        await Goals.render(root, { force: true });
       } catch {
         UI.toast("Не удалось создать план", true);
       } finally {
@@ -449,13 +457,11 @@
     });
   }
 
-  function historyLine(g, date) {
+  function historyLine(g) {
     const s = statsFor(g);
-    const name = s.item ? " · " + s.item.name : "";
-    if (date === UI.todayISO()) {
-      return `план ${g.target}${name} · факт ${s.fact}${s.done ? " · выполнен" : ""}`;
-    }
-    return `план ${g.target}${name}`;
+    const name = pathLabel(s.item);
+    const done = s.done ? " · выполнен" : "";
+    return `${name} · план ${g.target} · факт ${s.fact}${done}`;
   }
 
   const Goals = {
@@ -489,35 +495,33 @@
         }
         paintCard(card);
       });
-      const needsMove = goalsList().some((g) => {
+      const needsHide = goalsList().some((g) => {
         const s = statsFor(g);
         const card = host.querySelector(`[data-goal="${g.id}"]`);
-        if (!card) return false;
-        const inDone = !!card.closest("[data-plan-done]");
-        return !!s.done !== inDone;
+        return !!s.done && !!card;
       });
-      if (needsMove && !saving && !formBusy(host)) {
-        Goals.render(host);
+      if (needsHide && !saving && !formBusy(host)) {
+        Goals.render(host, { force: true });
       }
     },
 
-    async render(root) {
+    async render(root, opts) {
       if (!root) return;
-      if (saving || formBusy(root)) {
+      const force = !!(opts && opts.force);
+      if (!force && (saving || formBusy(root))) {
         paintAll(root);
         return;
       }
 
       const goals = goalsList();
       const active = goals.filter((g) => !statsFor(g).done);
-      const done = goals.filter((g) => statsFor(g).done);
       let history = [];
       try {
         history = await DB.getPackedHistory(State.data.productionId);
       } catch {
         history = [];
       }
-      if (saving || formBusy(root)) {
+      if (!force && (saving || formBusy(root))) {
         paintAll(root);
         return;
       }
@@ -538,13 +542,6 @@
                   ? ""
                   : '<p class="empty">Активных целей на сегодня нет.</p>'
             }
-            ${
-              done.length
-                ? `<div data-plan-done><h3 class="plan-history-title">Выполненные сегодня</h3>${done
-                    .map((g) => cardHtml(g))
-                    .join("")}</div>`
-                : ""
-            }
           </div>
           <div class="plan-history">
             <h3 class="plan-history-title">По датам</h3>
@@ -552,16 +549,18 @@
               history.length
                 ? history
                     .map((h) => {
-                      const parts =
+                      const lines =
                         Array.isArray(h.goals) && h.goals.length
-                          ? h.goals.map((g) => historyLine(g, h.date)).join("; ")
-                          : `план ${h.target}`;
+                          ? h.goals.map((g) => historyLine(g))
+                          : [`план ${h.target}`];
                       return `
               <div class="history-item">
                 <span></span>
                 <div>
                   <div class="who">${UI.escapeHtml(h.date)}</div>
-                  <div class="delta">${UI.escapeHtml(parts)}</div>
+                  ${lines
+                    .map((line) => `<div class="delta plan-day-line">${UI.escapeHtml(line)}</div>`)
+                    .join("")}
                 </div>
               </div>`;
                     })
@@ -580,7 +579,7 @@
           composerOpen = true;
           composerUseExisting = false;
           composerRows = defaultComposerRows();
-          Goals.render(root);
+          Goals.render(root, { force: true });
         });
       }
     },

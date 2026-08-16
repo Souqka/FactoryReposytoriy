@@ -779,6 +779,21 @@ body.qty-steppers-off .qty-btn {
   margin-top: 2px;
 }
 
+.plan-day-line {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
+  margin-top: 6px;
+}
+
+.plan-track-name {
+  display: block;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .history-item .when {
   font-size: 12px;
   color: var(--muted);
