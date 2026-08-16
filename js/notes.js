@@ -1,8 +1,11 @@
 /**
- * PinBoard — записки производства. Несколько исполнителей, оповещение на входе.
+ * Записки / задачи производства.
+ * «Мои задачи» — те же notes, отфильтрованные по session employee_id.
  */
 (function (global) {
   let lastNotifyKey = "";
+  let tab = "mine";
+  let mineFilter = "active";
 
   function assigneeIds(note) {
     if (!note) return [];
@@ -12,15 +15,71 @@
     return note.assignee_id ? [note.assignee_id] : [];
   }
 
+  function assignedTo(note, employeeId) {
+    return !!(employeeId && assigneeIds(note).includes(employeeId));
+  }
+
   function assignedOpen() {
     const me = State.data.employeeId;
     if (!me) return [];
-    return (State.cache.notes || []).filter((n) => !n.completed && assigneeIds(n).includes(me));
+    return (State.cache.notes || []).filter((n) => !n.completed && assignedTo(n, me));
   }
 
-  function employeeName(id, employees) {
-    const emp = (employees || []).find((e) => e.id === id);
-    return emp ? emp.name : "—";
+  function mineNotes() {
+    const me = State.data.employeeId;
+    return (State.cache.notes || []).filter((n) => assignedTo(n, me));
+  }
+
+  function noteCard(n, employees, opts) {
+    const me = State.data.employeeId;
+    const author = Employees.byId(n.author_id);
+    const ids = assigneeIds(n);
+    const names = ids.map((id) => Employees.name(id));
+    const mine = assignedTo(n, me) && !n.completed;
+    const compact = opts && opts.compact;
+    return `
+      <article class="note ${n.completed ? "is-done" : ""} ${mine ? "is-mine" : ""}" data-note="${n.id}">
+        <p>${n.completed ? "✅ " : "📌 "}${UI.escapeHtml(n.text)}</p>
+        <div class="note-meta">
+          <span class="dot" style="--c:${UI.escapeHtml(Employees.color(n.author_id))}"></span>
+          <span>${UI.escapeHtml(author ? author.name : "—")}</span>
+          ${!compact && names.length ? `<span>→ ${UI.escapeHtml(names.join(", "))}</span>` : ""}
+          <span>${n.completed ? "Выполнено" : UI.formatDayTime(n.created_at)}</span>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="btn" data-note-done="${n.id}">${n.completed ? "Вернуть" : "Выполнить"}</button>
+          ${compact ? "" : `<button type="button" class="btn btn-ghost" data-note-del="${n.id}">Удалить</button>`}
+        </div>
+      </article>`;
+  }
+
+  function bindNoteActions(root, notes) {
+    root.querySelectorAll("[data-note-done]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-note-done");
+        const note = notes.find((n) => n.id === id);
+        if (!note) return;
+        try {
+          await DB.updateNote(State.token(), id, { completed: !note.completed });
+          await Notes.load(State.data.productionId);
+          Notes.render(root);
+        } catch {
+          UI.toast("Не удалось обновить задачу", true);
+        }
+      });
+    });
+    root.querySelectorAll("[data-note-del]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-note-del");
+        try {
+          await DB.deleteNote(State.token(), id);
+          await Notes.load(State.data.productionId);
+          Notes.render(root);
+        } catch {
+          UI.toast("Не удалось удалить записку", true);
+        }
+      });
+    });
   }
 
   const Notes = {
@@ -41,6 +100,10 @@
       if (!badge) return;
       badge.textContent = String(n);
       badge.classList.toggle("hidden", n === 0);
+      const mineTab = UI.$("#notesTabMine");
+      if (mineTab) {
+        mineTab.textContent = n ? `Мои (${n})` : "Мои";
+      }
     },
 
     notifyIfAssigned() {
@@ -51,20 +114,19 @@
       if (pair !== lastNotifyKey) {
         lastNotifyKey = pair;
         this._lastCount = n;
-        if (!n) return;
-        UI.toast(n === 1 ? `Вам записка: ${String(rows[0].text || "").slice(0, 48)}` : `Вам назначено записок: ${n}`);
-        return;
+      } else {
+        this._lastCount = n;
       }
-      if (n > (this._lastCount || 0)) {
-        UI.toast(n === 1 ? "Вам новая записка" : `Новая записка. Всего на вас: ${n}`);
-      }
-      this._lastCount = n;
     },
 
     render(root) {
       const notes = State.cache.notes || [];
       const employees = State.cache.employees || [];
-      const me = State.data.employeeId;
+      const mine = mineNotes();
+      const activeMine = mine.filter((n) => !n.completed);
+      const doneMine = mine.filter((n) => n.completed);
+      const mineShown =
+        mineFilter === "active" ? activeMine : mineFilter === "done" ? doneMine : mine;
       const picks = employees
         .map(
           (e) => `
@@ -77,7 +139,26 @@
         .join("");
 
       root.innerHTML = `
-        <h2 style="margin:8px 4px 12px;font-size:16px">Записки</h2>
+        <div class="seg" role="tablist">
+          <button type="button" class="${tab === "mine" ? "is-active" : ""}" data-notes-tab="mine" id="notesTabMine">Мои${activeMine.length ? " (" + activeMine.length + ")" : ""}</button>
+          <button type="button" class="${tab === "all" ? "is-active" : ""}" data-notes-tab="all">Все</button>
+        </div>
+        ${
+          tab === "mine"
+            ? `
+        <h2 class="panel-title">Мои задачи</h2>
+        <div class="seg seg-sub">
+          <button type="button" class="${mineFilter === "active" ? "is-active" : ""}" data-mine-filter="active">Активные (${activeMine.length})</button>
+          <button type="button" class="${mineFilter === "done" ? "is-active" : ""}" data-mine-filter="done">Выполненные (${doneMine.length})</button>
+          <button type="button" class="${mineFilter === "all" ? "is-active" : ""}" data-mine-filter="all">Все</button>
+        </div>
+        ${
+          mineShown.length
+            ? mineShown.map((n) => noteCard(n, employees, { compact: true })).join("")
+            : '<p class="empty">Нет задач на вас.</p>'
+        }`
+            : `
+        <h2 class="panel-title">Задачи</h2>
         <form id="noteForm">
           <label class="field">
             <span>Текст</span>
@@ -92,65 +173,43 @@
         <div style="height:16px"></div>
         ${
           notes.length
-            ? notes
-                .map((n) => {
-                  const author = employees.find((e) => e.id === n.author_id);
-                  const ids = assigneeIds(n);
-                  const names = ids.map((id) => employeeName(id, employees));
-                  const mine = me && ids.includes(me) && !n.completed;
-                  return `
-                    <article class="note ${n.completed ? "is-done" : ""} ${mine ? "is-mine" : ""}" data-note="${n.id}">
-                      <p>${UI.escapeHtml(n.text)}</p>
-                      <div class="note-meta">
-                        <span>${author ? UI.escapeHtml(author.name) : "—"}</span>
-                        ${names.length ? `<span>→ ${UI.escapeHtml(names.join(", "))}</span>` : ""}
-                        <span>${UI.formatDateTime(n.created_at)}</span>
-                      </div>
-                      <div class="row-actions">
-                        <button type="button" class="btn" data-note-done="${n.id}">${n.completed ? "Вернуть" : "Готово"}</button>
-                        <button type="button" class="btn btn-ghost" data-note-del="${n.id}">Удалить</button>
-                      </div>
-                    </article>`;
-                })
-                .join("")
-            : '<p class="empty">Записок нет.</p>'
+            ? notes.map((n) => noteCard(n, employees, { compact: false })).join("")
+            : '<p class="empty">Задач нет.</p>'
+        }`
         }
       `;
 
+      root.querySelectorAll("[data-notes-tab]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          tab = btn.getAttribute("data-notes-tab");
+          Notes.render(root);
+        });
+      });
+      root.querySelectorAll("[data-mine-filter]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          mineFilter = btn.getAttribute("data-mine-filter");
+          Notes.render(root);
+        });
+      });
+
       const form = UI.$("#noteForm", root);
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const text = UI.$("#noteText", root).value.trim();
-        const ids = UI.$all("#noteAssignees input:checked", root).map((el) => el.value);
-        if (!text) return;
-        try {
-          await DB.createNote(State.token(), State.data.productionId, text, ids);
-          await this.load(State.data.productionId);
-          this.render(root);
-        } catch {
-          UI.toast("Не удалось сохранить записку", true);
-        }
-      });
-
-      root.querySelectorAll("[data-note-done]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const id = btn.getAttribute("data-note-done");
-          const note = notes.find((n) => n.id === id);
-          await DB.updateNote(State.token(), id, { completed: !note.completed });
-          await this.load(State.data.productionId);
-          this.render(root);
+      if (form) {
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const text = UI.$("#noteText", root).value.trim();
+          const ids = UI.$all("#noteAssignees input:checked", root).map((el) => el.value);
+          if (!text) return;
+          try {
+            await DB.createNote(State.token(), State.data.productionId, text, ids);
+            await this.load(State.data.productionId);
+            this.render(root);
+          } catch {
+            UI.toast("Не удалось сохранить записку", true);
+          }
         });
-      });
+      }
 
-      root.querySelectorAll("[data-note-del]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const id = btn.getAttribute("data-note-del");
-          await DB.deleteNote(State.token(), id);
-          await this.load(State.data.productionId);
-          this.render(root);
-        });
-      });
-
+      bindNoteActions(root, notes);
       this.paintBadge();
     },
   };

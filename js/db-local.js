@@ -287,9 +287,24 @@
     },
 
     async getHistory(productionId, limit) {
-      return db.change_history
-        .filter((h) => h.production_id === productionId)
+      const rows = db.change_history
+        .filter((h) => !productionId || h.production_id === productionId)
         .slice(0, limit || 80);
+      return rows.map((h) => {
+        const emp = db.employees.find((e) => e.id === h.employee_id);
+        const prod = db.productions.find((p) => p.id === h.production_id);
+        const item = db.items.find((i) => i.id === h.item_id);
+        const group = item && db.item_groups.find((g) => g.id === item.group_id);
+        const dept = group && db.departments.find((d) => d.id === group.department_id);
+        return {
+          ...h,
+          employee_name: emp ? emp.name : "—",
+          employee_color: emp ? emp.color : "#64748b",
+          production_name: prod ? prod.name : "—",
+          department_id: dept ? dept.id : "",
+          department_name: dept ? dept.name : "—",
+        };
+      });
     },
 
     async getNotes(productionId) {

@@ -11,7 +11,17 @@
     },
 
     byId(id) {
-      return State.cache.employees.find((e) => e.id === id) || null;
+      return (State.cache.employees || []).find((e) => e.id === id) || null;
+    },
+
+    name(id) {
+      const e = this.byId(id);
+      return e ? e.name : "—";
+    },
+
+    color(id) {
+      const e = this.byId(id);
+      return e && e.color ? e.color : "#64748b";
     },
 
     renderList(root) {

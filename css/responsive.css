@@ -37,6 +37,10 @@
 }
 
 @media (min-width: 760px) {
+  .hist-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .workspace {
     padding-top: 16px;
     padding-left: 20px;
@@ -101,6 +105,7 @@
 .btn,
 .person-btn,
 .prod-btn,
-.reorder-btn {
+.reorder-btn,
+.seg button {
   touch-action: manipulation;
 }
