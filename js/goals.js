@@ -4,7 +4,7 @@
  */
 (function (global) {
   const TRACK_PREFIX = "item:";
-  const saveTimers = new Map();
+  const editing = new Set();
   let saving = false;
   let composerOpen = false;
   let composerRows = [{ itemId: "", target: "" }];
@@ -38,6 +38,7 @@
     const raw = String((goal && goal.label) || "");
     let itemId = goal && goal.tracked_item_id ? String(goal.tracked_item_id) : "";
     let startQty = null;
+    let manualDone = false;
     if (raw.startsWith(TRACK_PREFIX)) {
       const parts = raw.slice(TRACK_PREFIX.length).split("|");
       if (!itemId) itemId = parts[0] || "";
@@ -46,15 +47,20 @@
           const n = Number.parseInt(part.slice(6), 10);
           if (Number.isFinite(n) && n >= 0) startQty = n;
         }
+        if (part === "done:1" || part === "done") manualDone = true;
       });
+    } else if (/(^|\|)done:1(\||$)/.test(raw)) {
+      manualDone = true;
     }
-    return { itemId, startQty };
+    return { itemId, startQty, manualDone };
   }
 
-  function encodeTrackedLabel(itemId, startQty) {
+  function encodeTrackedLabel(itemId, startQty, done) {
     if (!itemId) return "";
-    if (startQty == null || startQty === "") return TRACK_PREFIX + itemId;
-    return TRACK_PREFIX + itemId + "|start:" + String(startQty);
+    let out = TRACK_PREFIX + itemId;
+    if (startQty != null && startQty !== "") out += "|start:" + String(startQty);
+    if (done) out += "|done:1";
+    return out;
   }
 
   function optionLabel(item) {
@@ -82,7 +88,8 @@
     const item = findTracked(meta.itemId);
     const current = item ? UI.parseNonNegInt(item.quantity, 0) : 0;
     const fact = meta.startQty != null ? Math.max(current - meta.startQty, 0) : current;
-    const done = !!item && fact >= target;
+    const autoDone = !!item && fact >= target;
+    const done = !!meta.manualDone || autoDone;
     return {
       target,
       fact,
@@ -90,6 +97,7 @@
       itemId: meta.itemId,
       item,
       startQty: meta.startQty,
+      manualDone: !!meta.manualDone,
       current,
       done,
     };
@@ -156,6 +164,8 @@
     card.classList.toggle("is-done", !!s.done);
     const badge = card.querySelector("[data-plan-status]");
     if (badge) badge.classList.toggle("hidden", !s.done);
+    const completeBtn = card.querySelector("[data-goal-complete]");
+    if (completeBtn) completeBtn.classList.toggle("hidden", !!s.done);
   }
 
   function paintAll(root) {
@@ -170,16 +180,23 @@
   }
 
   async function persistCard(card, opts) {
-    if (!card || !State.data.productionId) return;
+    if (!card || !State.data.productionId) return false;
     const id = card.getAttribute("data-goal");
     const goal = goalsList().find((g) => g.id === id);
     const input = card.querySelector("[data-goal-target]");
     const select = card.querySelector("[data-goal-item]");
-    const targetVal = UI.parseNonNegInt(input ? input.value : 0, 0);
-    const itemId = select ? select.value : parseGoalMeta(goal).itemId;
     const prev = parseGoalMeta(goal);
+    const targetVal = input
+      ? UI.parseNonNegInt(input.value, 0)
+      : UI.parseNonNegInt(goal && goal.target, 0);
+    const itemId = select ? select.value : prev.itemId;
     const startQty = itemId && itemId === prev.itemId ? prev.startQty : null;
-    const labelVal = encodeTrackedLabel(itemId, startQty);
+    const keepDone = !!(opts && opts.complete) || (prev.manualDone && !(opts && opts.clearDone));
+    let labelVal = encodeTrackedLabel(itemId, startQty, keepDone);
+    if (!itemId) {
+      const raw = String((goal && goal.label) || "").replace(/\|?done:1/g, "");
+      labelVal = keepDone ? (raw ? raw + "|done:1" : "done:1") : raw;
+    }
     saving = true;
     try {
       const res = await DB.upsertGoal(State.token(), State.data.productionId, null, targetVal, labelVal, id);
@@ -188,35 +205,58 @@
       Offline.saveCache();
       paintCard(card);
       if (opts && opts.toast) UI.toast("Цель сохранена");
+      return true;
     } catch {
       UI.toast("Не удалось сохранить цель", true);
+      return false;
     } finally {
       saving = false;
     }
   }
 
-  function schedulePersist(card) {
-    const id = card.getAttribute("data-goal");
-    clearTimeout(saveTimers.get(id));
-    saveTimers.set(
-      id,
-      setTimeout(() => persistCard(card), 400)
-    );
+  function cardRoot(card) {
+    return card.closest(".panel") || card.parentElement;
   }
 
   function bindCard(card) {
     const input = card.querySelector("[data-goal-target]");
     const select = card.querySelector("[data-goal-item]");
     if (input) {
-      input.addEventListener("input", () => {
-        paintCard(card);
-        schedulePersist(card);
-      });
-      input.addEventListener("change", () => persistCard(card));
-      input.addEventListener("blur", () => persistCard(card));
+      input.addEventListener("input", () => paintCard(card));
     }
     if (select) {
-      select.addEventListener("change", () => persistCard(card, { toast: true }));
+      select.addEventListener("change", () => paintCard(card));
+    }
+    const completeBtn = card.querySelector("[data-goal-complete]");
+    if (completeBtn) {
+      completeBtn.addEventListener("click", async () => {
+        const ok = await persistCard(card, { complete: true, toast: false });
+        if (!ok) return;
+        editing.delete(card.getAttribute("data-goal"));
+        UI.toast("План выполнен");
+        await Goals.render(cardRoot(card));
+      });
+    }
+    const editBtn = card.querySelector("[data-goal-edit]");
+    if (editBtn) {
+      editBtn.addEventListener("click", async () => {
+        const id = card.getAttribute("data-goal");
+        if (editing.has(id)) {
+          const ok = await persistCard(card, { toast: true, clearDone: true });
+          if (!ok) return;
+          editing.delete(id);
+        } else {
+          editing.add(id);
+        }
+        await Goals.render(cardRoot(card));
+      });
+    }
+    const cancelBtn = card.querySelector("[data-goal-cancel]");
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", async () => {
+        editing.delete(card.getAttribute("data-goal"));
+        await Goals.render(cardRoot(card));
+      });
     }
     const del = card.querySelector("[data-goal-del]");
     if (del) {
@@ -224,10 +264,10 @@
         const id = card.getAttribute("data-goal");
         try {
           await DB.deleteGoal(State.token(), id);
+          editing.delete(id);
           State.cache.goals = goalsList().filter((g) => g.id !== id);
           Offline.saveCache();
-          const root = card.closest(".panel") || card.parentElement;
-          await Goals.render(root);
+          await Goals.render(cardRoot(card));
         } catch {
           UI.toast("Не удалось удалить цель", true);
         }
@@ -235,13 +275,13 @@
     }
   }
 
-  function cardHtml(goal, readonly) {
+  function cardHtml(goal) {
     const s = statsFor(goal);
+    const isEditing = editing.has(goal.id);
     const built = optionsHtml(s.itemId);
     const doneClass = s.done ? " is-done" : "";
-    const fields = readonly
-      ? ""
-      : `
+    const fields = isEditing
+      ? `
         <label class="field">
           <span>Цель</span>
           <input type="number" data-goal-target min="0" step="1" inputmode="numeric" value="${s.target}" />
@@ -249,12 +289,25 @@
         <label class="field">
           <span>Отслеживать позицию</span>
           <select data-goal-item>${built.html}</select>
-        </label>`;
+        </label>`
+      : "";
+    const actions = isEditing
+      ? `
+        <div class="goal-actions">
+          <button type="button" class="btn btn-primary" data-goal-edit>Сохранить</button>
+          <button type="button" class="btn" data-goal-cancel>Отмена</button>
+          <button type="button" class="btn btn-ghost" data-goal-del>Удалить</button>
+        </div>`
+      : `
+        <div class="goal-actions">
+          <button type="button" class="btn btn-primary${s.done ? " hidden" : ""}" data-goal-complete>Выполнить</button>
+          <button type="button" class="btn" data-goal-edit>Изменить</button>
+          <button type="button" class="btn btn-ghost" data-goal-del>Удалить</button>
+        </div>`;
     return `
       <article class="goal-card${doneClass}" data-goal="${goal.id}">
         <div class="goal-card-head">
           <p class="lede"><span class="plan-track-name">${UI.escapeHtml(s.item ? s.item.name : "позиция не выбрана")}</span></p>
-          <button type="button" class="btn btn-ghost" data-goal-del>Удалить</button>
         </div>
         <p class="plan-done${s.done ? "" : " hidden"}" data-plan-status>✅ План выполнен</p>
         <div class="goal-grid">
@@ -263,6 +316,7 @@
           <div class="stat"><b data-stat="left">${s.left}</b><span>Осталось</span></div>
         </div>
         ${fields}
+        ${actions}
       </article>`;
   }
 
@@ -479,7 +533,7 @@
             ${composerHtml()}
             ${
               active.length
-                ? active.map((g) => cardHtml(g, false)).join("")
+                ? active.map((g) => cardHtml(g)).join("")
                 : composerOpen
                   ? ""
                   : '<p class="empty">Активных целей на сегодня нет.</p>'
@@ -487,7 +541,7 @@
             ${
               done.length
                 ? `<div data-plan-done><h3 class="plan-history-title">Выполненные сегодня</h3>${done
-                    .map((g) => cardHtml(g, true))
+                    .map((g) => cardHtml(g))
                     .join("")}</div>`
                 : ""
             }

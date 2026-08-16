@@ -46,6 +46,10 @@
     align-items: end;
   }
 
+  .goal-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .workspace {
     padding-top: 16px;
     padding-left: 20px;
