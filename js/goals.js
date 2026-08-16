@@ -1,10 +1,14 @@
 /**
- * Дневной план: несколько целей, каждая со своей отслеживаемой позицией.
+ * Дневной план: цели по складским позициям, учёт уже имеющегося количества,
+ * автоматическое выполнение при факт >= план.
  */
 (function (global) {
   const TRACK_PREFIX = "item:";
   const saveTimers = new Map();
   let saving = false;
+  let composerOpen = false;
+  let composerRows = [{ itemId: "", target: "" }];
+  let composerUseExisting = false;
 
   function flattenItems() {
     const tree = State.cache.tree || [];
@@ -30,16 +34,27 @@
     return out;
   }
 
-  function trackedItemIdFromGoal(goal) {
-    if (!goal) return "";
-    if (goal.tracked_item_id) return String(goal.tracked_item_id);
-    const label = String(goal.label || "");
-    if (label.startsWith(TRACK_PREFIX)) return label.slice(TRACK_PREFIX.length);
-    return "";
+  function parseGoalMeta(goal) {
+    const raw = String((goal && goal.label) || "");
+    let itemId = goal && goal.tracked_item_id ? String(goal.tracked_item_id) : "";
+    let startQty = null;
+    if (raw.startsWith(TRACK_PREFIX)) {
+      const parts = raw.slice(TRACK_PREFIX.length).split("|");
+      if (!itemId) itemId = parts[0] || "";
+      parts.slice(1).forEach((part) => {
+        if (part.indexOf("start:") === 0) {
+          const n = Number.parseInt(part.slice(6), 10);
+          if (Number.isFinite(n) && n >= 0) startQty = n;
+        }
+      });
+    }
+    return { itemId, startQty };
   }
 
-  function encodeTrackedLabel(itemId) {
-    return itemId ? TRACK_PREFIX + itemId : "";
+  function encodeTrackedLabel(itemId, startQty) {
+    if (!itemId) return "";
+    if (startQty == null || startQty === "") return TRACK_PREFIX + itemId;
+    return TRACK_PREFIX + itemId + "|start:" + String(startQty);
   }
 
   function optionLabel(item) {
@@ -52,22 +67,53 @@
     return flattenItems().find((i) => i.id === itemId) || null;
   }
 
+  function stockQty(itemId) {
+    const item = findTracked(itemId);
+    return item ? UI.parseNonNegInt(item.quantity, 0) : 0;
+  }
+
   function goalsList() {
     return Array.isArray(State.cache.goals) ? State.cache.goals : [];
   }
 
   function statsFor(goal, overrideTarget) {
     const target = overrideTarget != null ? overrideTarget : goal ? UI.parseNonNegInt(goal.target, 0) : 0;
-    const itemId = trackedItemIdFromGoal(goal);
-    const item = findTracked(itemId);
-    const fact = item ? item.quantity : 0;
+    const meta = parseGoalMeta(goal);
+    const item = findTracked(meta.itemId);
+    const current = item ? UI.parseNonNegInt(item.quantity, 0) : 0;
+    const fact = meta.startQty != null ? Math.max(current - meta.startQty, 0) : current;
+    const done = !!item && fact >= target;
     return {
       target,
       fact,
       left: Math.max(target - fact, 0),
-      itemId,
+      itemId: meta.itemId,
       item,
+      startQty: meta.startQty,
+      current,
+      done,
     };
+  }
+
+  function pickNamed(items, re) {
+    const matches = items.filter((i) => re.test(i.name));
+    if (!matches.length) return null;
+    const preferred = matches.filter((i) => /сборк|упаков/i.test(String(i.deptName) + " " + String(i.groupName)));
+    const pool = preferred.length ? preferred : matches;
+    return pool[pool.length - 1];
+  }
+
+  function defaultComposerRows() {
+    const items = flattenItems();
+    const black = pickNamed(items, /чёрн|черн/i);
+    const white = pickNamed(items, /бел/i);
+    if (black && white && black.id !== white.id) {
+      return [
+        { itemId: black.id, target: "" },
+        { itemId: white.id, target: "" },
+      ];
+    }
+    return [{ itemId: "", target: "" }];
   }
 
   function optionsHtml(selectedId) {
@@ -87,7 +133,9 @@
     if (!root) return false;
     const active = document.activeElement;
     if (!active || !root.contains(active)) return false;
-    return active.matches("[data-goal-target], [data-goal-item]");
+    return active.matches(
+      "[data-goal-target], [data-goal-item], [data-compose-item], [data-compose-target], #composeUseExisting"
+    );
   }
 
   function paintCard(card) {
@@ -105,21 +153,33 @@
     if (l) l.textContent = String(s.left);
     const nameEl = card.querySelector(".plan-track-name");
     if (nameEl) nameEl.textContent = s.item ? s.item.name : "позиция не выбрана";
+    card.classList.toggle("is-done", !!s.done);
+    const badge = card.querySelector("[data-plan-status]");
+    if (badge) badge.classList.toggle("hidden", !s.done);
   }
 
   function paintAll(root) {
     if (!root) return;
-    root.querySelectorAll("[data-goal]").forEach(paintCard);
+    let moved = false;
+    root.querySelectorAll("[data-goal]").forEach((card) => {
+      const wasDone = card.classList.contains("is-done");
+      paintCard(card);
+      if (card.classList.contains("is-done") !== wasDone) moved = true;
+    });
+    return moved;
   }
 
   async function persistCard(card, opts) {
     if (!card || !State.data.productionId) return;
     const id = card.getAttribute("data-goal");
+    const goal = goalsList().find((g) => g.id === id);
     const input = card.querySelector("[data-goal-target]");
     const select = card.querySelector("[data-goal-item]");
     const targetVal = UI.parseNonNegInt(input ? input.value : 0, 0);
-    const itemId = select ? select.value : "";
-    const labelVal = encodeTrackedLabel(itemId);
+    const itemId = select ? select.value : parseGoalMeta(goal).itemId;
+    const prev = parseGoalMeta(goal);
+    const startQty = itemId && itemId === prev.itemId ? prev.startQty : null;
+    const labelVal = encodeTrackedLabel(itemId, startQty);
     saving = true;
     try {
       const res = await DB.upsertGoal(State.token(), State.data.productionId, null, targetVal, labelVal, id);
@@ -175,20 +235,13 @@
     }
   }
 
-  function cardHtml(goal) {
+  function cardHtml(goal, readonly) {
     const s = statsFor(goal);
     const built = optionsHtml(s.itemId);
-    return `
-      <article class="goal-card" data-goal="${goal.id}">
-        <div class="goal-card-head">
-          <p class="lede"><span class="plan-track-name">${UI.escapeHtml(s.item ? s.item.name : "позиция не выбрана")}</span></p>
-          <button type="button" class="btn btn-ghost" data-goal-del>Удалить</button>
-        </div>
-        <div class="goal-grid">
-          <div class="stat"><b data-stat="target">${s.target}</b><span>План</span></div>
-          <div class="stat"><b data-stat="fact">${s.fact}</b><span>Факт</span></div>
-          <div class="stat"><b data-stat="left">${s.left}</b><span>Осталось</span></div>
-        </div>
+    const doneClass = s.done ? " is-done" : "";
+    const fields = readonly
+      ? ""
+      : `
         <label class="field">
           <span>Цель</span>
           <input type="number" data-goal-target min="0" step="1" inputmode="numeric" value="${s.target}" />
@@ -196,8 +249,159 @@
         <label class="field">
           <span>Отслеживать позицию</span>
           <select data-goal-item>${built.html}</select>
-        </label>
+        </label>`;
+    return `
+      <article class="goal-card${doneClass}" data-goal="${goal.id}">
+        <div class="goal-card-head">
+          <p class="lede"><span class="plan-track-name">${UI.escapeHtml(s.item ? s.item.name : "позиция не выбрана")}</span></p>
+          <button type="button" class="btn btn-ghost" data-goal-del>Удалить</button>
+        </div>
+        <p class="plan-done${s.done ? "" : " hidden"}" data-plan-status>✅ План выполнен</p>
+        <div class="goal-grid">
+          <div class="stat"><b data-stat="target">${s.target}</b><span>План</span></div>
+          <div class="stat"><b data-stat="fact">${s.fact}</b><span>Факт</span></div>
+          <div class="stat"><b data-stat="left">${s.left}</b><span>Осталось</span></div>
+        </div>
+        ${fields}
       </article>`;
+  }
+
+  function composerPreviewHtml() {
+    if (!composerUseExisting) return "";
+    const lines = composerRows
+      .map((row) => {
+        const item = findTracked(row.itemId);
+        if (!item) return "";
+        const want = UI.parseNonNegInt(row.target, 0);
+        const have = UI.parseNonNegInt(item.quantity, 0);
+        const extra = Math.max(want - have, 0);
+        return `<div class="plan-preview-row">
+          <b>${UI.escapeHtml(item.name)}</b>
+          <span>Уже есть: ${have} → дополнительно: ${extra}</span>
+        </div>`;
+      })
+      .filter(Boolean)
+      .join("");
+    if (!lines) {
+      return '<div class="plan-preview"><p class="lede">Выберите позицию, чтобы увидеть расчёт.</p></div>';
+    }
+    return `<div class="plan-preview"><p class="plan-preview-title">Уже есть</p>${lines}</div>`;
+  }
+
+  function composerRowHtml(row, index) {
+    const built = optionsHtml(row.itemId);
+    return `
+      <div class="plan-compose-row" data-compose-row="${index}">
+        <label class="field">
+          <span>Позиция</span>
+          <select data-compose-item>${built.html}</select>
+        </label>
+        <label class="field">
+          <span>Цель</span>
+          <input type="number" data-compose-target min="0" step="1" inputmode="numeric" value="${UI.escapeHtml(row.target)}" placeholder="0" />
+        </label>
+      </div>`;
+  }
+
+  function composerHtml() {
+    if (!composerOpen) return "";
+    return `
+      <form class="goal-card plan-compose" id="planCompose">
+        <h3 class="plan-compose-title">Новый план на сегодня</h3>
+        ${composerRows.map(composerRowHtml).join("")}
+        <button type="button" class="btn btn-ghost" id="composeAddRow">Ещё позиция</button>
+        <label class="chip-check plan-existing">
+          <input type="checkbox" id="composeUseExisting"${composerUseExisting ? " checked" : ""} />
+          <span>Учитывать уже имеющуюся готовую продукцию</span>
+        </label>
+        <div id="composePreview">${composerPreviewHtml()}</div>
+        <div class="row-actions">
+          <button type="submit" class="btn btn-primary">Создать план</button>
+          <button type="button" class="btn btn-ghost" id="composeCancel">Отмена</button>
+        </div>
+      </form>`;
+  }
+
+  function readComposer(root) {
+    const form = UI.$("#planCompose", root);
+    if (!form) return;
+    composerUseExisting = !!(UI.$("#composeUseExisting", form) && UI.$("#composeUseExisting", form).checked);
+    composerRows = UI.$all("[data-compose-row]", form).map((row) => ({
+      itemId: (row.querySelector("[data-compose-item]") || {}).value || "",
+      target: (row.querySelector("[data-compose-target]") || {}).value || "",
+    }));
+    if (!composerRows.length) composerRows = [{ itemId: "", target: "" }];
+  }
+
+  function refreshComposerPreview(root) {
+    readComposer(root);
+    const box = UI.$("#composePreview", root);
+    if (box) box.innerHTML = composerPreviewHtml();
+  }
+
+  function bindComposer(root) {
+    const form = UI.$("#planCompose", root);
+    if (!form) return;
+    form.addEventListener("input", () => refreshComposerPreview(root));
+    form.addEventListener("change", () => refreshComposerPreview(root));
+    const addRow = UI.$("#composeAddRow", form);
+    if (addRow) {
+      addRow.addEventListener("click", () => {
+        readComposer(root);
+        composerRows.push({ itemId: "", target: "" });
+        Goals.render(root);
+      });
+    }
+    const cancel = UI.$("#composeCancel", form);
+    if (cancel) {
+      cancel.addEventListener("click", () => {
+        composerOpen = false;
+        Goals.render(root);
+      });
+    }
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      readComposer(root);
+      const rows = composerRows.filter((row) => row.itemId);
+      if (!rows.length) {
+        UI.toast("Выберите позицию", true);
+        return;
+      }
+      saving = true;
+      try {
+        for (const row of rows) {
+          const typed = UI.parseNonNegInt(row.target, 0);
+          const label = encodeTrackedLabel(row.itemId);
+          await DB.upsertGoal(
+            State.token(),
+            State.data.productionId,
+            null,
+            typed,
+            label,
+            null,
+            composerUseExisting
+          );
+        }
+        composerOpen = false;
+        composerUseExisting = false;
+        UI.toast("План создан");
+        await Goals.load(State.data.productionId);
+        await Goals.render(root);
+      } catch {
+        UI.toast("Не удалось создать план", true);
+      } finally {
+        saving = false;
+      }
+    });
+  }
+
+  function historyLine(g, date) {
+    const s = statsFor(g);
+    const name = s.item ? " · " + s.item.name : "";
+    if (date === UI.todayISO()) {
+      return `план ${g.target}${name} · факт ${s.fact}${s.done ? " · выполнен" : ""}`;
+    }
+    return `план ${g.target}${name}`;
   }
 
   const Goals = {
@@ -218,7 +422,7 @@
         const id = card.getAttribute("data-goal");
         const goal = goalsList().find((g) => g.id === id);
         const select = card.querySelector("[data-goal-item]");
-        const current = select ? select.value : trackedItemIdFromGoal(goal);
+        const current = select ? select.value : parseGoalMeta(goal).itemId;
         const built = optionsHtml(current);
         if (select) {
           const keep = select.value;
@@ -231,6 +435,16 @@
         }
         paintCard(card);
       });
+      const needsMove = goalsList().some((g) => {
+        const s = statsFor(g);
+        const card = host.querySelector(`[data-goal="${g.id}"]`);
+        if (!card) return false;
+        const inDone = !!card.closest("[data-plan-done]");
+        return !!s.done !== inDone;
+      });
+      if (needsMove && !saving && !formBusy(host)) {
+        Goals.render(host);
+      }
     },
 
     async render(root) {
@@ -241,6 +455,8 @@
       }
 
       const goals = goalsList();
+      const active = goals.filter((g) => !statsFor(g).done);
+      const done = goals.filter((g) => statsFor(g).done);
       let history = [];
       try {
         history = await DB.getPackedHistory(State.data.productionId);
@@ -257,13 +473,23 @@
           <div class="plan-main">
             <div class="plan-toolbar">
               <h2 class="plan-title">Дневной план</h2>
-              <button type="button" class="btn btn-primary" id="addGoal">Добавить цель</button>
+              <button type="button" class="btn btn-primary" id="addGoal">Новый план</button>
             </div>
             <p class="lede">${UI.todayISO()}</p>
+            ${composerHtml()}
             ${
-              goals.length
-                ? goals.map(cardHtml).join("")
-                : '<p class="empty">Целей на сегодня нет. Добавьте первую.</p>'
+              active.length
+                ? active.map((g) => cardHtml(g, false)).join("")
+                : composerOpen
+                  ? ""
+                  : '<p class="empty">Активных целей на сегодня нет.</p>'
+            }
+            ${
+              done.length
+                ? `<div data-plan-done><h3 class="plan-history-title">Выполненные сегодня</h3>${done
+                    .map((g) => cardHtml(g, true))
+                    .join("")}</div>`
+                : ""
             }
           </div>
           <div class="plan-history">
@@ -272,15 +498,10 @@
               history.length
                 ? history
                     .map((h) => {
-                      const parts = Array.isArray(h.goals) && h.goals.length
-                        ? h.goals
-                            .map((g) => {
-                              const item = findTracked(trackedItemIdFromGoal(g));
-                              const name = item ? item.name : "";
-                              return `план ${g.target}${name ? " · " + name : ""}`;
-                            })
-                            .join("; ")
-                        : `план ${h.target}`;
+                      const parts =
+                        Array.isArray(h.goals) && h.goals.length
+                          ? h.goals.map((g) => historyLine(g, h.date)).join("; ")
+                          : `план ${h.target}`;
                       return `
               <div class="history-item">
                 <span></span>
@@ -298,21 +519,14 @@
       `;
 
       root.querySelectorAll("[data-goal]").forEach(bindCard);
+      bindComposer(root);
       const addBtn = UI.$("#addGoal", root);
       if (addBtn) {
-        addBtn.addEventListener("click", async () => {
-          try {
-            const res = await DB.upsertGoal(State.token(), State.data.productionId, null, 0, "", null);
-            const goal = res.goal;
-            if (goal) {
-              State.cache.goals = goalsList().concat([goal]);
-              Offline.saveCache();
-            }
-            await Goals.load(State.data.productionId);
-            await Goals.render(root);
-          } catch {
-            UI.toast("Не удалось добавить цель", true);
-          }
+        addBtn.addEventListener("click", () => {
+          composerOpen = true;
+          composerUseExisting = false;
+          composerRows = defaultComposerRows();
+          Goals.render(root);
         });
       }
     },

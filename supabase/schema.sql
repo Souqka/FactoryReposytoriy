@@ -817,7 +817,55 @@ $$;
 -- -----------------------------------------------------------------------------
 -- Дневные цели и упаковка
 -- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION _item_stock_qty(p_item_id uuid, p_production_id uuid)
+RETURNS integer
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+DECLARE
+  v_item items;
+  v_prod uuid;
+  v_qty  integer;
+BEGIN
+  IF p_item_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT i.* INTO v_item FROM items i WHERE i.id = p_item_id;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT d.production_id INTO v_prod
+    FROM item_groups g
+    JOIN departments d ON d.id = g.department_id
+   WHERE g.id = v_item.group_id;
+
+  IF v_prod IS DISTINCT FROM p_production_id THEN
+    RETURN NULL;
+  END IF;
+
+  IF COALESCE(v_item.is_sum, false) THEN
+    SELECT COALESCE(SUM(s.quantity), 0) INTO v_qty
+      FROM items s
+     WHERE s.group_id = v_item.group_id
+       AND COALESCE(s.is_sum, false) = false
+       AND s.active;
+  ELSE
+    v_qty := v_item.quantity;
+  END IF;
+
+  RETURN GREATEST(COALESCE(v_qty, 0), 0);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION _item_stock_qty(uuid, uuid) FROM PUBLIC, anon, authenticated;
+
 DROP FUNCTION IF EXISTS upsert_daily_goal(text, uuid, date, integer, text);
+DROP FUNCTION IF EXISTS upsert_daily_goal(text, uuid, date, integer, text, uuid);
+DROP FUNCTION IF EXISTS upsert_daily_goal(text, uuid, date, integer, text, uuid, boolean);
 
 CREATE OR REPLACE FUNCTION upsert_daily_goal(
   p_token         text,
@@ -825,7 +873,8 @@ CREATE OR REPLACE FUNCTION upsert_daily_goal(
   p_goal_date     date DEFAULT NULL,
   p_target        integer DEFAULT 0,
   p_label         text DEFAULT 'упакованных рамок',
-  p_id            uuid DEFAULT NULL
+  p_id            uuid DEFAULT NULL,
+  p_use_existing  boolean DEFAULT false
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -837,6 +886,10 @@ DECLARE
   v_goal    daily_goals;
   v_date    date;
   v_order   integer;
+  v_label   text;
+  v_target  integer;
+  v_item_id uuid;
+  v_start   integer;
 BEGIN
   v_session := _require_session(p_token, false);
   PERFORM _assert_production(p_production_id);
@@ -846,10 +899,25 @@ BEGIN
     v_date := CURRENT_DATE;
   END IF;
 
+  v_label := COALESCE(p_label, '');
+  v_target := GREATEST(COALESCE(p_target, 0), 0);
+
+  IF COALESCE(p_use_existing, false) THEN
+    v_item_id := NULL;
+    IF v_label ~* '^item:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' THEN
+      v_item_id := substring(v_label from 6 for 36)::uuid;
+    END IF;
+    v_start := _item_stock_qty(v_item_id, p_production_id);
+    IF v_start IS NOT NULL THEN
+      v_target := GREATEST(v_target - v_start, 0);
+      v_label := 'item:' || v_item_id::text || '|start:' || v_start::text;
+    END IF;
+  END IF;
+
   IF p_id IS NOT NULL THEN
     UPDATE daily_goals
-       SET target = GREATEST(COALESCE(p_target, 0), 0),
-           label = COALESCE(p_label, label)
+       SET target = v_target,
+           label = v_label
      WHERE id = p_id
        AND production_id = p_production_id
        AND goal_date = v_date
@@ -866,8 +934,8 @@ BEGIN
     VALUES (
       p_production_id,
       v_date,
-      GREATEST(COALESCE(p_target, 0), 0),
-      COALESCE(p_label, ''),
+      v_target,
+      v_label,
       v_order
     )
     RETURNING * INTO v_goal;
@@ -876,6 +944,9 @@ BEGIN
   RETURN jsonb_build_object('ok', true, 'goal', to_jsonb(v_goal));
 END;
 $$;
+
+REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid, boolean) TO anon, authenticated;
 
 CREATE OR REPLACE FUNCTION delete_daily_goal(p_token text, p_goal_id uuid)
 RETURNS jsonb

@@ -48,6 +48,40 @@
     );
   }
 
+  function itemIdFromLabel(label) {
+    const raw = String(label || "");
+    if (raw.indexOf("item:") !== 0) return "";
+    return raw.slice(5).split("|")[0] || "";
+  }
+
+  function stockFromTree(itemId) {
+    const tree = (global.State && State.cache && State.cache.tree) || [];
+    for (const dept of tree) {
+      for (const group of dept.groups || []) {
+        const item = (group.items || []).find((i) => i.id === itemId);
+        if (!item) continue;
+        if (item.is_sum && global.Production && Production.displayQty) {
+          return Math.max(0, Number(Production.displayQty(item, group)) || 0);
+        }
+        return Math.max(0, Number(item.quantity) || 0);
+      }
+    }
+    return null;
+  }
+
+  function prepareExistingFromTree(label, target) {
+    const itemId = itemIdFromLabel(label);
+    const start = stockFromTree(itemId);
+    const want = Math.max(0, Math.floor(Number(target) || 0));
+    if (start == null || !itemId) {
+      return { target: want, label: label || "" };
+    }
+    return {
+      target: Math.max(want - start, 0),
+      label: "item:" + itemId + "|start:" + start,
+    };
+  }
+
   const RemoteDB = {
     mode: "supabase",
 
@@ -191,7 +225,7 @@
       return res.goal ? [res.goal] : [];
     },
 
-    async upsertGoal(tok, productionId, date, target, label, id) {
+    async upsertGoal(tok, productionId, date, target, label, id, useExisting) {
       const args = {
         p_token: tok,
         p_production_id: productionId,
@@ -200,17 +234,25 @@
         p_label: label || "",
       };
       if (id) args.p_id = id;
+      if (useExisting) args.p_use_existing = true;
       try {
         return await rpc("upsert_daily_goal", args);
       } catch (e) {
-        if (id && e && e.kind === "db_not_ready") {
-          return rpc("upsert_daily_goal", {
+        if (e && e.kind === "db_not_ready") {
+          const fallback = {
             p_token: tok,
             p_production_id: productionId,
             p_goal_date: date || null,
             p_target: target,
             p_label: label || "",
-          });
+          };
+          if (id) fallback.p_id = id;
+          if (useExisting) {
+            const prepared = prepareExistingFromTree(label, target);
+            fallback.p_target = prepared.target;
+            fallback.p_label = prepared.label;
+          }
+          return rpc("upsert_daily_goal", fallback);
         }
         throw e;
       }

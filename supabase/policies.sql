@@ -134,8 +134,13 @@ END $$;
 
 DO $$
 BEGIN
-  REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) FROM PUBLIC;
-  GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) TO anon, authenticated;
+  REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid, boolean) FROM PUBLIC;
+  GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid, boolean) TO anon, authenticated;
+  BEGIN
+    REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) FROM PUBLIC, anon, authenticated;
+  EXCEPTION
+    WHEN undefined_function THEN NULL;
+  END;
   BEGIN
     REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) FROM PUBLIC, anon, authenticated;
   EXCEPTION
@@ -144,10 +149,23 @@ BEGIN
 EXCEPTION
   WHEN undefined_function THEN
     BEGIN
-      GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) TO anon, authenticated;
+      REVOKE ALL ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text, uuid) TO anon, authenticated;
     EXCEPTION
-      WHEN undefined_function THEN NULL;
+      WHEN undefined_function THEN
+        BEGIN
+          GRANT EXECUTE ON FUNCTION upsert_daily_goal(text, uuid, date, integer, text) TO anon, authenticated;
+        EXCEPTION
+          WHEN undefined_function THEN NULL;
+        END;
     END;
+END $$;
+
+DO $$
+BEGIN
+  REVOKE ALL ON FUNCTION _item_stock_qty(uuid, uuid) FROM PUBLIC, anon, authenticated;
+EXCEPTION
+  WHEN undefined_function THEN NULL;
 END $$;
 
 DO $$

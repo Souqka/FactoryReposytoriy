@@ -77,8 +77,8 @@
     getGoals(id, date) {
       return this.adapter().getGoals(id, date);
     },
-    upsertGoal(token, productionId, date, target, label, id) {
-      return this.adapter().upsertGoal(token, productionId, date, target, label, id);
+    upsertGoal(token, productionId, date, target, label, id, useExisting) {
+      return this.adapter().upsertGoal(token, productionId, date, target, label, id, useExisting);
     },
     deleteGoal(token, id) {
       return this.adapter().deleteGoal(token, id);
